@@ -195,7 +195,6 @@ public class TestHiveGlueMetastore
     public void testUpdatePartitionColumnStatistics()
             throws Exception
     {
-        // super.testUpdatePartitionColumnStatistics();
         SchemaTableName tableName = temporaryTable("update_partition_column_statistics");
         try {
             createDummyPartitionedTable(tableName, STATISTICS_PARTITIONED_TABLE_COLUMNS);

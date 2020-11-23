@@ -165,7 +165,6 @@ public class GlueHiveMetastore
     private final String catalogId;
     private final int partitionSegments;
     private final Executor partitionsExecutor;
-    private final Executor statisticsExecutor;
     private final GlueMetastoreStats stats = new GlueMetastoreStats();
     private final GlueColumnStatisticsProvider columnStatisticsProvider;
     private final boolean assumeCanonicalPartitionKeys;
@@ -193,7 +192,6 @@ public class GlueHiveMetastore
         this.assumeCanonicalPartitionKeys = glueConfig.isAssumeCanonicalPartitionKeys();
         this.tableFilter = requireNonNull(tableFilter, "tableFilter is null");
         this.enableColumnStatistics = glueConfig.getEnableColumnStatistics();
-        this.statisticsExecutor = statisticsReadExecutor;
         if (this.enableColumnStatistics) {
             this.columnStatisticsProvider = new DefaultGlueColumnStatisticsProvider(glueClient, catalogId, statisticsReadExecutor, statisticsWriteExecutor);
         }
