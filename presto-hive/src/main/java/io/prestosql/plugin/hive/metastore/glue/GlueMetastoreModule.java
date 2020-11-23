@@ -15,7 +15,12 @@ package io.prestosql.plugin.hive.metastore.glue;
 
 import com.amazonaws.handlers.RequestHandler2;
 import com.amazonaws.services.glue.model.Table;
-import com.google.inject.*;
+import com.google.inject.Binder;
+import com.google.inject.Key;
+import com.google.inject.Provides;
+import com.google.inject.Scopes;
+import com.google.inject.Singleton;
+import com.google.inject.TypeLiteral;
 import com.google.inject.name.Named;
 import io.airlift.concurrent.BoundedExecutor;
 import io.airlift.configuration.AbstractConfigurationAwareModule;

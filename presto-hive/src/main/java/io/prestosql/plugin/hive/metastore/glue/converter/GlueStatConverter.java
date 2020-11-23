@@ -66,6 +66,7 @@ import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Cate
 
 public class GlueStatConverter
 {
+    private GlueStatConverter() {}
 
     private static final long DAY_TO_MILLISECOND_FACTOR = TimeUnit.DAYS.toMillis(1);
 
@@ -75,7 +76,6 @@ public class GlueStatConverter
         List<ColumnStatistics> catalogColumnStatisticsList = new ArrayList<>(prestoColumnStats.size());
 
         prestoColumnStats.forEach((columnName, statistics) -> {
-
             final Optional<Column> column = columnByName(partition, columnName);
             HiveType columnType = column.get().getType();
 

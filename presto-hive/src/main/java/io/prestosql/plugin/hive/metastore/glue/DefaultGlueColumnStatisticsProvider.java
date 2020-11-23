@@ -52,7 +52,6 @@ import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.getH
 public class DefaultGlueColumnStatisticsProvider
         implements GlueColumnStatisticsProvider
 {
-
     private static final int GLUE_COLUMN_READ_STAT_PAGE_SIZE = 100;
     private static final int GLUE_COLUMN_WRITE_STAT_PAGE_SIZE = 25;
 
@@ -102,10 +101,8 @@ public class DefaultGlueColumnStatisticsProvider
         final HiveBasicStatistics tableStatistics = getHiveBasicStatistics(table.getParameters());
 
         final ImmutableMap.Builder<String, HiveColumnStatistics> columnStatsMapBuilder = ImmutableMap.builder();
-        columnStatsBuilder.build().forEach(col -> columnStatsMapBuilder.put(col.getColumnName(),
-                GlueStatConverter.fromGlueColumnStatistics(col.getStatisticsData(), tableStatistics.getRowCount()))
-        );
-
+        columnStatsBuilder.build()
+                .forEach(col -> columnStatsMapBuilder.put(col.getColumnName(), GlueStatConverter.fromGlueColumnStatistics(col.getStatisticsData(), tableStatistics.getRowCount())));
         return columnStatsMapBuilder.build();
     }
 
@@ -140,9 +137,7 @@ public class DefaultGlueColumnStatisticsProvider
 
         final ImmutableMap.Builder<String, HiveColumnStatistics> columnStatsMapBuilder = ImmutableMap.builder();
         columnStatsBuilder.build().forEach(col -> columnStatsMapBuilder.put(col.getColumnName(),
-                GlueStatConverter.fromGlueColumnStatistics(col.getStatisticsData(), tableStatistics.getRowCount()))
-        );
-
+                GlueStatConverter.fromGlueColumnStatistics(col.getStatisticsData(), tableStatistics.getRowCount())));
         return columnStatsMapBuilder.build();
     }
 
@@ -175,9 +170,8 @@ public class DefaultGlueColumnStatisticsProvider
                                 .withCatalogId(catalogId)
                                 .withDatabaseName(table.getDatabaseName())
                                 .withTableName(table.getTableName())
-                                .withColumnStatisticsList(columnChunk)
-                )
-        )).collect(Collectors.toUnmodifiableList());
+                                .withColumnStatisticsList(columnChunk))))
+                .collect(Collectors.toUnmodifiableList());
 
         for (CompletableFuture<Void> writeChunkFuture : writeChunkFutures) {
             MoreFutures.getFutureValue(writeChunkFuture);
@@ -188,16 +182,14 @@ public class DefaultGlueColumnStatisticsProvider
     public void updatePartitionStatistics(Partition partition, Map<String, HiveColumnStatistics> columnStatistics, boolean forPartitionCreation)
     {
         if (columnStatistics.isEmpty() && !forPartitionCreation) {
-
             final List<CompletableFuture<Void>> writeFutures = partition.getColumns().stream()
                     .map(column -> CompletableFuture.runAsync(() ->
-                            glueClient.deleteColumnStatisticsForPartition(
-                                    new DeleteColumnStatisticsForPartitionRequest()
-                                            .withCatalogId(catalogId)
-                                            .withDatabaseName(partition.getDatabaseName())
-                                            .withTableName(partition.getTableName())
-                                            .withPartitionValues(partition.getValues())
-                                            .withColumnName(column.getName())), writeExecutor)
+                            glueClient.deleteColumnStatisticsForPartition(new DeleteColumnStatisticsForPartitionRequest()
+                                    .withCatalogId(catalogId)
+                                    .withDatabaseName(partition.getDatabaseName())
+                                    .withTableName(partition.getTableName())
+                                    .withPartitionValues(partition.getValues())
+                                    .withColumnName(column.getName())), writeExecutor)
                     ).collect(Collectors.toUnmodifiableList());
 
             for (CompletableFuture<Void> writeFuture : writeFutures) {
