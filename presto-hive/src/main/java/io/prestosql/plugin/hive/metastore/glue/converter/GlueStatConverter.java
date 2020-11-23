@@ -13,7 +13,18 @@
  */
 package io.prestosql.plugin.hive.metastore.glue.converter;
 
-import com.amazonaws.services.glue.model.*;
+import com.amazonaws.services.glue.model.BinaryColumnStatisticsData;
+import com.amazonaws.services.glue.model.BooleanColumnStatisticsData;
+import com.amazonaws.services.glue.model.ColumnStatistics;
+import com.amazonaws.services.glue.model.ColumnStatisticsData;
+import com.amazonaws.services.glue.model.ColumnStatisticsType;
+import com.amazonaws.services.glue.model.DateColumnStatisticsData;
+import com.amazonaws.services.glue.model.DecimalColumnStatisticsData;
+import com.amazonaws.services.glue.model.DecimalNumber;
+import com.amazonaws.services.glue.model.DoubleColumnStatisticsData;
+import com.amazonaws.services.glue.model.LongColumnStatisticsData;
+import com.amazonaws.services.glue.model.StringColumnStatisticsData;
+import com.amazonaws.services.glue.model.TableInput;
 import io.prestosql.plugin.hive.HiveType;
 import io.prestosql.plugin.hive.metastore.Column;
 import io.prestosql.plugin.hive.metastore.HiveColumnStatistics;
@@ -28,21 +39,39 @@ import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
 import java.time.LocalDate;
-import java.util.*;
+import java.util.ArrayList;
+import java.util.Date;
+import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.OptionalDouble;
+import java.util.OptionalLong;
 import java.util.concurrent.TimeUnit;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.prestosql.plugin.hive.HiveErrorCode.HIVE_INVALID_METADATA;
-import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.*;
-import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.*;
+import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createBinaryColumnStatistics;
+import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createBooleanColumnStatistics;
+import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createDateColumnStatistics;
+import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createDecimalColumnStatistics;
+import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createDoubleColumnStatistics;
+import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createIntegerColumnStatistics;
+import static io.prestosql.plugin.hive.metastore.HiveColumnStatistics.createStringColumnStatistics;
+import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.fromMetastoreDistinctValuesCount;
+import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.fromMetastoreNullsCount;
+import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.getAverageColumnLength;
+import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.getTotalSizeInBytes;
+import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.toMetastoreDistinctValuesCount;
 import static org.apache.hadoop.hive.serde2.objectinspector.ObjectInspector.Category.PRIMITIVE;
 
-public class GlueStatConverter {
+public class GlueStatConverter
+{
 
     private static final long DAY_TO_MILLISECOND_FACTOR = TimeUnit.DAYS.toMillis(1);
 
     public static List<ColumnStatistics> toGlueColumnStatistics(
-            Partition partition, Map<String, HiveColumnStatistics> prestoColumnStats, OptionalLong rowCount) {
+            Partition partition, Map<String, HiveColumnStatistics> prestoColumnStats, OptionalLong rowCount)
+    {
         List<ColumnStatistics> catalogColumnStatisticsList = new ArrayList<>(prestoColumnStats.size());
 
         prestoColumnStats.forEach((columnName, statistics) -> {
@@ -64,7 +93,8 @@ public class GlueStatConverter {
     }
 
     public static List<ColumnStatistics> toGlueColumnStatistics(
-            Table table, Map<String, HiveColumnStatistics> prestoColumnStats, OptionalLong rowCount) {
+            Table table, Map<String, HiveColumnStatistics> prestoColumnStats, OptionalLong rowCount)
+    {
         List<ColumnStatistics> catalogColumnStatisticsList = new ArrayList<>(prestoColumnStats.size());
 
         prestoColumnStats.forEach((columnName, statistics) -> {
@@ -83,7 +113,8 @@ public class GlueStatConverter {
         return catalogColumnStatisticsList;
     }
 
-    private static Optional<Column> columnByName(Partition partition, String columnName) {
+    private static Optional<Column> columnByName(Partition partition, String columnName)
+    {
         for (Column column : partition.getColumns()) {
             if (column.getName().equals(columnName)) {
                 return Optional.of(column);
@@ -92,7 +123,8 @@ public class GlueStatConverter {
         return Optional.empty();
     }
 
-    private static Optional<Column> columnByName(TableInput table, String columnName) {
+    private static Optional<Column> columnByName(TableInput table, String columnName)
+    {
         for (com.amazonaws.services.glue.model.Column column : table.getStorageDescriptor().getColumns()) {
             if (column.getName().equals(columnName)) {
                 return Optional.of(GlueToPrestoConverter.convertColumn(column));
@@ -101,8 +133,8 @@ public class GlueStatConverter {
         return Optional.empty();
     }
 
-
-    public static HiveColumnStatistics fromGlueColumnStatistics(ColumnStatisticsData catalogColumnStatisticsData, OptionalLong rowCount) {
+    public static HiveColumnStatistics fromGlueColumnStatistics(ColumnStatisticsData catalogColumnStatisticsData, OptionalLong rowCount)
+    {
         ColumnStatisticsType type = ColumnStatisticsType.fromValue(catalogColumnStatisticsData.getType());
         switch (type) {
             case BINARY:
@@ -171,7 +203,8 @@ public class GlueStatConverter {
         throw new PrestoException(HIVE_INVALID_METADATA, "Invalid column statistics data: " + catalogColumnStatisticsData);
     }
 
-    private static ColumnStatisticsData getGlueColumnStatisticsData(HiveColumnStatistics statistics, HiveType columnType, OptionalLong rowCount) {
+    private static ColumnStatisticsData getGlueColumnStatisticsData(HiveColumnStatistics statistics, HiveType columnType, OptionalLong rowCount)
+    {
         TypeInfo typeInfo = columnType.getTypeInfo();
         checkArgument(typeInfo.getCategory() == PRIMITIVE, "unsupported type: %s", columnType);
 
@@ -262,8 +295,8 @@ public class GlueStatConverter {
         return catalogColumnStatisticsData;
     }
 
-
-    private static DecimalNumber bigDecimalToGlueDecimal(BigDecimal decimal) {
+    private static DecimalNumber bigDecimalToGlueDecimal(BigDecimal decimal)
+    {
         Decimal hiveDecimal = new Decimal((short) decimal.scale(), ByteBuffer.wrap(decimal.unscaledValue().toByteArray()));
         DecimalNumber catalogDecimal = new DecimalNumber();
         catalogDecimal.setUnscaledValue(ByteBuffer.wrap(hiveDecimal.getUnscaled()));
@@ -271,19 +304,22 @@ public class GlueStatConverter {
         return catalogDecimal;
     }
 
-    private static Optional<BigDecimal> glueDecimalToBigDecimal(DecimalNumber catalogDecimal) {
+    private static Optional<BigDecimal> glueDecimalToBigDecimal(DecimalNumber catalogDecimal)
+    {
         Decimal decimal = new Decimal();
         decimal.setUnscaled(catalogDecimal.getUnscaledValue());
         decimal.setScale(catalogDecimal.getScale().shortValue());
         return Optional.of(new BigDecimal(new BigInteger(decimal.getUnscaled()), decimal.getScale()));
     }
 
-    private static Optional<LocalDate> dateToLocalDate(Date date) {
+    private static Optional<LocalDate> dateToLocalDate(Date date)
+    {
         long daysSinceEpoch = date.getTime() / DAY_TO_MILLISECOND_FACTOR;
         return Optional.of(LocalDate.ofEpochDay(daysSinceEpoch));
     }
 
-    private static Date localDateToDate(LocalDate date) {
+    private static Date localDateToDate(LocalDate date)
+    {
         long millisecondsSinceEpoch = date.toEpochDay() * DAY_TO_MILLISECOND_FACTOR;
         return new Date(millisecondsSinceEpoch);
     }

@@ -14,7 +14,15 @@
 package io.prestosql.plugin.hive.metastore.glue;
 
 import com.amazonaws.services.glue.AWSGlueAsync;
-import com.amazonaws.services.glue.model.*;
+import com.amazonaws.services.glue.model.ColumnStatistics;
+import com.amazonaws.services.glue.model.DeleteColumnStatisticsForPartitionRequest;
+import com.amazonaws.services.glue.model.DeleteColumnStatisticsForTableRequest;
+import com.amazonaws.services.glue.model.GetColumnStatisticsForPartitionRequest;
+import com.amazonaws.services.glue.model.GetColumnStatisticsForPartitionResult;
+import com.amazonaws.services.glue.model.GetColumnStatisticsForTableRequest;
+import com.amazonaws.services.glue.model.GetColumnStatisticsForTableResult;
+import com.amazonaws.services.glue.model.UpdateColumnStatisticsForPartitionRequest;
+import com.amazonaws.services.glue.model.UpdateColumnStatisticsForTableRequest;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.Lists;
@@ -42,7 +50,8 @@ import java.util.stream.Stream;
 import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.getHiveBasicStatistics;
 
 public class DefaultGlueColumnStatisticsProvider
-        implements GlueColumnStatisticsProvider {
+        implements GlueColumnStatisticsProvider
+{
 
     private static final int GLUE_COLUMN_READ_STAT_PAGE_SIZE = 100;
     private static final int GLUE_COLUMN_WRITE_STAT_PAGE_SIZE = 25;
@@ -52,7 +61,8 @@ public class DefaultGlueColumnStatisticsProvider
     private final Executor readExecutor;
     private final Executor writeExecutor;
 
-    public DefaultGlueColumnStatisticsProvider(AWSGlueAsync glueClient, String catalogId, Executor readExecutor, Executor writeExecutor) {
+    public DefaultGlueColumnStatisticsProvider(AWSGlueAsync glueClient, String catalogId, Executor readExecutor, Executor writeExecutor)
+    {
         this.glueClient = glueClient;
         this.catalogId = catalogId;
         this.readExecutor = readExecutor;
@@ -60,12 +70,14 @@ public class DefaultGlueColumnStatisticsProvider
     }
 
     @Override
-    public Set<ColumnStatisticType> getSupportedColumnStatistics(Type type) {
+    public Set<ColumnStatisticType> getSupportedColumnStatistics(Type type)
+    {
         return ThriftMetastoreUtil.getSupportedColumnStatistics(type);
     }
 
     @Override
-    public Map<String, HiveColumnStatistics> getTableColumnStatistics(Table table) {
+    public Map<String, HiveColumnStatistics> getTableColumnStatistics(Table table)
+    {
         final List<String> columnNames = getAllColumns(table);
         final List<List<String>> columnChunks = Lists.partition(columnNames, GLUE_COLUMN_READ_STAT_PAGE_SIZE);
 
@@ -80,7 +92,6 @@ public class DefaultGlueColumnStatisticsProvider
 
             return glueClient.getColumnStatisticsForTable(request);
         }, readExecutor)));
-
 
         final ImmutableList.Builder<ColumnStatistics> columnStatsBuilder = ImmutableList.builder();
         for (CompletableFuture<GetColumnStatisticsForTableResult> future : getStatsFutures.build()) {
@@ -99,7 +110,8 @@ public class DefaultGlueColumnStatisticsProvider
     }
 
     @Override
-    public Map<String, HiveColumnStatistics> getPartitionColumnStatistics(Partition partition) {
+    public Map<String, HiveColumnStatistics> getPartitionColumnStatistics(Partition partition)
+    {
         final List<List<Column>> columnChunks = Lists.partition(partition.getColumns(), GLUE_COLUMN_READ_STAT_PAGE_SIZE);
         ImmutableList.Builder<CompletableFuture<GetColumnStatisticsForPartitionResult>> getStatsFutures = ImmutableList.builder();
 
@@ -118,7 +130,6 @@ public class DefaultGlueColumnStatisticsProvider
             return glueClient.getColumnStatisticsForPartition(request);
         }, readExecutor)));
 
-
         final ImmutableList.Builder<ColumnStatistics> columnStatsBuilder = ImmutableList.builder();
         for (CompletableFuture<GetColumnStatisticsForPartitionResult> future : getStatsFutures.build()) {
             final GetColumnStatisticsForPartitionResult tableColumnsStats = MoreFutures.getFutureValue(future, PrestoException.class);
@@ -136,7 +147,8 @@ public class DefaultGlueColumnStatisticsProvider
     }
 
     @Override
-    public void updateTableColumnStatistics(Table table, Map<String, HiveColumnStatistics> columnStatistics) {
+    public void updateTableColumnStatistics(Table table, Map<String, HiveColumnStatistics> columnStatistics)
+    {
         final HiveBasicStatistics tableStats = getHiveBasicStatistics(table.getParameters());
 
         if (columnStatistics.isEmpty()) {
@@ -170,11 +182,11 @@ public class DefaultGlueColumnStatisticsProvider
         for (CompletableFuture<Void> writeChunkFuture : writeChunkFutures) {
             MoreFutures.getFutureValue(writeChunkFuture);
         }
-
     }
 
     @Override
-    public void updatePartitionStatistics(Partition partition, Map<String, HiveColumnStatistics> columnStatistics, boolean forPartitionCreation) {
+    public void updatePartitionStatistics(Partition partition, Map<String, HiveColumnStatistics> columnStatistics, boolean forPartitionCreation)
+    {
         if (columnStatistics.isEmpty() && !forPartitionCreation) {
 
             final List<CompletableFuture<Void>> writeFutures = partition.getColumns().stream()
@@ -192,7 +204,6 @@ public class DefaultGlueColumnStatisticsProvider
                 MoreFutures.getFutureValue(writeFuture);
             }
         }
-
 
         final HiveBasicStatistics partitionStats = getHiveBasicStatistics(partition.getParameters());
         final List<ColumnStatistics> columnStats = GlueStatConverter.toGlueColumnStatistics(partition, columnStatistics, partitionStats.getRowCount());
@@ -214,11 +225,11 @@ public class DefaultGlueColumnStatisticsProvider
         }
     }
 
-    private List<String> getAllColumns(Table table) {
+    private List<String> getAllColumns(Table table)
+    {
         final List<String> allColumns = new ArrayList<>(table.getDataColumns().size() + table.getPartitionColumns().size());
         table.getDataColumns().stream().map(Column::getName).forEach(allColumns::add);
         table.getPartitionColumns().stream().map(Column::getName).forEach(allColumns::add);
         return allColumns;
     }
-
 }

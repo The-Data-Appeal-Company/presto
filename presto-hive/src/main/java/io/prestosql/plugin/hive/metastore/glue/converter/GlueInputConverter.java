@@ -13,15 +13,21 @@
  */
 package io.prestosql.plugin.hive.metastore.glue.converter;
 
-import com.amazonaws.services.glue.model.*;
+import com.amazonaws.services.glue.model.DatabaseInput;
+import com.amazonaws.services.glue.model.Order;
+import com.amazonaws.services.glue.model.PartitionInput;
+import com.amazonaws.services.glue.model.SerDeInfo;
+import com.amazonaws.services.glue.model.StorageDescriptor;
+import com.amazonaws.services.glue.model.TableInput;
 import com.google.common.collect.ImmutableMap;
 import io.prestosql.plugin.hive.HiveBucketProperty;
 import io.prestosql.plugin.hive.PartitionStatistics;
 import io.prestosql.plugin.hive.metastore.Column;
 import io.prestosql.plugin.hive.metastore.Database;
 import io.prestosql.plugin.hive.metastore.Partition;
+import io.prestosql.plugin.hive.metastore.PartitionWithStatistics;
+import io.prestosql.plugin.hive.metastore.Storage;
 import io.prestosql.plugin.hive.metastore.Table;
-import io.prestosql.plugin.hive.metastore.*;
 import io.prestosql.plugin.hive.metastore.glue.GlueColumnStatisticsProvider;
 
 import java.util.List;
@@ -30,11 +36,14 @@ import java.util.Optional;
 import static com.google.common.collect.ImmutableList.toImmutableList;
 import static io.prestosql.plugin.hive.metastore.thrift.ThriftMetastoreUtil.updateStatisticsParameters;
 
-public final class GlueInputConverter {
-    private GlueInputConverter() {
+public final class GlueInputConverter
+{
+    private GlueInputConverter()
+    {
     }
 
-    public static DatabaseInput convertDatabase(Database database) {
+    public static DatabaseInput convertDatabase(Database database)
+    {
         DatabaseInput input = new DatabaseInput();
         input.setName(database.getDatabaseName());
         input.setParameters(database.getParameters());
@@ -43,7 +52,8 @@ public final class GlueInputConverter {
         return input;
     }
 
-    public static TableInput convertTable(Table table) {
+    public static TableInput convertTable(Table table)
+    {
         TableInput input = new TableInput();
         input.setName(table.getTableName());
         input.setOwner(table.getOwner());
@@ -56,7 +66,8 @@ public final class GlueInputConverter {
         return input;
     }
 
-    public static PartitionInput convertPartition(PartitionWithStatistics partitionWithStatistics, GlueColumnStatisticsProvider columnStatisticsProvider) {
+    public static PartitionInput convertPartition(PartitionWithStatistics partitionWithStatistics, GlueColumnStatisticsProvider columnStatisticsProvider)
+    {
         PartitionInput input = convertPartition(partitionWithStatistics.getPartition());
         PartitionStatistics statistics = partitionWithStatistics.getStatistics();
         columnStatisticsProvider.updatePartitionStatistics(partitionWithStatistics.getPartition(), statistics.getColumnStatistics(), true);
@@ -64,7 +75,8 @@ public final class GlueInputConverter {
         return input;
     }
 
-    public static PartitionInput convertPartition(Partition partition) {
+    public static PartitionInput convertPartition(Partition partition)
+    {
         PartitionInput input = new PartitionInput();
         input.setValues(partition.getValues());
         input.setStorageDescriptor(convertStorage(partition.getStorage(), partition.getColumns()));
@@ -72,7 +84,8 @@ public final class GlueInputConverter {
         return input;
     }
 
-    private static StorageDescriptor convertStorage(Storage storage, List<Column> columns) {
+    private static StorageDescriptor convertStorage(Storage storage, List<Column> columns)
+    {
         if (storage.isSkewed()) {
             throw new IllegalArgumentException("Writing to skewed table/partition is not supported");
         }
@@ -102,7 +115,8 @@ public final class GlueInputConverter {
         return sd;
     }
 
-    private static com.amazonaws.services.glue.model.Column convertColumn(Column prestoColumn) {
+    private static com.amazonaws.services.glue.model.Column convertColumn(Column prestoColumn)
+    {
         return new com.amazonaws.services.glue.model.Column()
                 .withName(prestoColumn.getName())
                 .withType(prestoColumn.getType().toString())

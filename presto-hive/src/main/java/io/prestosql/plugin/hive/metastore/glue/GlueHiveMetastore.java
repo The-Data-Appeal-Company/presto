@@ -15,28 +15,74 @@ package io.prestosql.plugin.hive.metastore.glue;
 
 import com.amazonaws.AmazonServiceException;
 import com.amazonaws.ClientConfiguration;
-import com.amazonaws.auth.*;
+import com.amazonaws.auth.AWSCredentialsProvider;
+import com.amazonaws.auth.AWSStaticCredentialsProvider;
+import com.amazonaws.auth.BasicAWSCredentials;
+import com.amazonaws.auth.DefaultAWSCredentialsProviderChain;
+import com.amazonaws.auth.STSAssumeRoleSessionCredentialsProvider;
 import com.amazonaws.client.builder.AwsClientBuilder.EndpointConfiguration;
 import com.amazonaws.handlers.RequestHandler2;
 import com.amazonaws.metrics.RequestMetricCollector;
 import com.amazonaws.services.glue.AWSGlueAsync;
 import com.amazonaws.services.glue.AWSGlueAsyncClientBuilder;
-import com.amazonaws.services.glue.model.*;
+import com.amazonaws.services.glue.model.AlreadyExistsException;
+import com.amazonaws.services.glue.model.BatchCreatePartitionRequest;
+import com.amazonaws.services.glue.model.BatchCreatePartitionResult;
+import com.amazonaws.services.glue.model.BatchGetPartitionRequest;
+import com.amazonaws.services.glue.model.BatchGetPartitionResult;
+import com.amazonaws.services.glue.model.CreateDatabaseRequest;
+import com.amazonaws.services.glue.model.CreateTableRequest;
+import com.amazonaws.services.glue.model.DatabaseInput;
+import com.amazonaws.services.glue.model.DeleteDatabaseRequest;
+import com.amazonaws.services.glue.model.DeletePartitionRequest;
+import com.amazonaws.services.glue.model.DeleteTableRequest;
+import com.amazonaws.services.glue.model.EntityNotFoundException;
+import com.amazonaws.services.glue.model.ErrorDetail;
+import com.amazonaws.services.glue.model.GetDatabaseRequest;
+import com.amazonaws.services.glue.model.GetDatabaseResult;
+import com.amazonaws.services.glue.model.GetDatabasesRequest;
+import com.amazonaws.services.glue.model.GetDatabasesResult;
+import com.amazonaws.services.glue.model.GetPartitionRequest;
+import com.amazonaws.services.glue.model.GetPartitionResult;
+import com.amazonaws.services.glue.model.GetPartitionsRequest;
+import com.amazonaws.services.glue.model.GetPartitionsResult;
+import com.amazonaws.services.glue.model.GetTableRequest;
+import com.amazonaws.services.glue.model.GetTableResult;
+import com.amazonaws.services.glue.model.GetTablesRequest;
+import com.amazonaws.services.glue.model.GetTablesResult;
+import com.amazonaws.services.glue.model.PartitionError;
+import com.amazonaws.services.glue.model.PartitionInput;
+import com.amazonaws.services.glue.model.PartitionValueList;
+import com.amazonaws.services.glue.model.Segment;
+import com.amazonaws.services.glue.model.TableInput;
+import com.amazonaws.services.glue.model.UpdateDatabaseRequest;
+import com.amazonaws.services.glue.model.UpdatePartitionRequest;
+import com.amazonaws.services.glue.model.UpdateTableRequest;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
 import com.google.inject.name.Named;
 import io.airlift.log.Logger;
-import io.prestosql.plugin.hive.*;
+import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HdfsEnvironment.HdfsContext;
+import io.prestosql.plugin.hive.HiveType;
+import io.prestosql.plugin.hive.PartitionNotFoundException;
+import io.prestosql.plugin.hive.PartitionStatistics;
+import io.prestosql.plugin.hive.SchemaAlreadyExistsException;
+import io.prestosql.plugin.hive.TableAlreadyExistsException;
 import io.prestosql.plugin.hive.acid.AcidTransaction;
 import io.prestosql.plugin.hive.authentication.HiveIdentity;
 import io.prestosql.plugin.hive.metastore.Column;
 import io.prestosql.plugin.hive.metastore.Database;
+import io.prestosql.plugin.hive.metastore.HiveMetastore;
+import io.prestosql.plugin.hive.metastore.HivePrincipal;
+import io.prestosql.plugin.hive.metastore.HivePrivilegeInfo;
+import io.prestosql.plugin.hive.metastore.MetastoreUtil;
 import io.prestosql.plugin.hive.metastore.Partition;
+import io.prestosql.plugin.hive.metastore.PartitionWithStatistics;
+import io.prestosql.plugin.hive.metastore.PrincipalPrivileges;
 import io.prestosql.plugin.hive.metastore.Table;
-import io.prestosql.plugin.hive.metastore.*;
 import io.prestosql.plugin.hive.metastore.glue.converter.GlueInputConverter;
 import io.prestosql.plugin.hive.metastore.glue.converter.GlueToPrestoConverter;
 import io.prestosql.plugin.hive.metastore.glue.converter.GlueToPrestoConverter.GluePartitionConverter;
@@ -58,10 +104,20 @@ import org.weakref.jmx.Managed;
 
 import javax.annotation.Nullable;
 import javax.inject.Inject;
+
+import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.*;
+import java.util.Optional;
+import java.util.OptionalLong;
+import java.util.Set;
+import java.util.concurrent.CompletionService;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executor;
+import java.util.concurrent.ExecutorCompletionService;
+import java.util.concurrent.Future;
 import java.util.function.Function;
 import java.util.function.Predicate;
 
@@ -90,7 +146,8 @@ import static org.apache.hadoop.hive.metastore.TableType.MANAGED_TABLE;
 import static org.apache.hadoop.hive.metastore.TableType.VIRTUAL_VIEW;
 
 public class GlueHiveMetastore
-        implements HiveMetastore {
+        implements HiveMetastore
+{
     private static final Logger log = Logger.get(GlueHiveMetastore.class);
 
     private static final String PUBLIC_ROLE_NAME = "public";
@@ -123,7 +180,8 @@ public class GlueHiveMetastore
             @Named("glue-statistics-read") @ForGlueHiveMetastore Executor statisticsReadExecutor,
             @Named("glue-statistics-write") @ForGlueHiveMetastore Executor statisticsWriteExecutor,
             @ForGlueHiveMetastore Optional<RequestHandler2> requestHandler,
-            @ForGlueHiveMetastore Predicate<com.amazonaws.services.glue.model.Table> tableFilter) {
+            @ForGlueHiveMetastore Predicate<com.amazonaws.services.glue.model.Table> tableFilter)
+    {
         requireNonNull(glueConfig, "glueConfig is null");
         this.hdfsEnvironment = requireNonNull(hdfsEnvironment, "hdfsEnvironment is null");
         this.hdfsContext = new HdfsContext(ConnectorIdentity.ofUser(DEFAULT_METASTORE_USER));
@@ -138,12 +196,14 @@ public class GlueHiveMetastore
         this.statisticsExecutor = statisticsReadExecutor;
         if (this.enableColumnStatistics) {
             this.columnStatisticsProvider = new DefaultGlueColumnStatisticsProvider(glueClient, catalogId, statisticsReadExecutor, statisticsWriteExecutor);
-        } else {
+        }
+        else {
             this.columnStatisticsProvider = new DisabledGlueColumnStatisticsProvider();
         }
     }
 
-    private static AWSGlueAsync createAsyncGlueClient(GlueHiveMetastoreConfig config, Optional<RequestHandler2> requestHandler, RequestMetricCollector metricsCollector) {
+    private static AWSGlueAsync createAsyncGlueClient(GlueHiveMetastoreConfig config, Optional<RequestHandler2> requestHandler, RequestMetricCollector metricsCollector)
+    {
         ClientConfiguration clientConfig = new ClientConfiguration()
                 .withMaxConnections(config.getMaxGlueConnections())
                 .withMaxErrorRetry(config.getMaxGlueErrorRetries());
@@ -158,9 +218,11 @@ public class GlueHiveMetastore
             asyncGlueClientBuilder.setEndpointConfiguration(new EndpointConfiguration(
                     config.getGlueEndpointUrl().get(),
                     config.getGlueRegion().get()));
-        } else if (config.getGlueRegion().isPresent()) {
+        }
+        else if (config.getGlueRegion().isPresent()) {
             asyncGlueClientBuilder.setRegion(config.getGlueRegion().get());
-        } else if (config.getPinGlueClientToCurrentRegion()) {
+        }
+        else if (config.getPinGlueClientToCurrentRegion()) {
             asyncGlueClientBuilder.setRegion(getCurrentRegionFromEC2Metadata().getName());
         }
 
@@ -169,7 +231,8 @@ public class GlueHiveMetastore
         return asyncGlueClientBuilder.build();
     }
 
-    private static AWSCredentialsProvider getAwsCredentialsProvider(GlueHiveMetastoreConfig config) {
+    private static AWSCredentialsProvider getAwsCredentialsProvider(GlueHiveMetastoreConfig config)
+    {
         if (config.getAwsAccessKey().isPresent() && config.getAwsSecretKey().isPresent()) {
             return new AWSStaticCredentialsProvider(
                     new BasicAWSCredentials(config.getAwsAccessKey().get(), config.getAwsSecretKey().get()));
@@ -186,39 +249,46 @@ public class GlueHiveMetastore
         return DefaultAWSCredentialsProviderChain.getInstance();
     }
 
-    private static AWSCredentialsProvider getCustomAWSCredentialsProvider(String providerClass) {
+    private static AWSCredentialsProvider getCustomAWSCredentialsProvider(String providerClass)
+    {
         try {
             Object instance = Class.forName(providerClass).getConstructor().newInstance();
             if (!(instance instanceof AWSCredentialsProvider)) {
                 throw new RuntimeException("Invalid credentials provider class: " + instance.getClass().getName());
             }
             return (AWSCredentialsProvider) instance;
-        } catch (ReflectiveOperationException e) {
+        }
+        catch (ReflectiveOperationException e) {
             throw new RuntimeException(format("Error creating an instance of %s", providerClass), e);
         }
     }
 
     @Managed
     @Flatten
-    public GlueMetastoreStats getStats() {
+    public GlueMetastoreStats getStats()
+    {
         return stats;
     }
 
     @Override
-    public Optional<Database> getDatabase(String databaseName) {
+    public Optional<Database> getDatabase(String databaseName)
+    {
         try {
             GetDatabaseResult result = stats.getGetDatabase().call(() ->
                     glueClient.getDatabase(new GetDatabaseRequest().withCatalogId(catalogId).withName(databaseName)));
             return Optional.of(GlueToPrestoConverter.convertDatabase(result.getDatabase()));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             return Optional.empty();
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public List<String> getAllDatabases() {
+    public List<String> getAllDatabases()
+    {
         try {
             return stats.getGetAllDatabases().call(() -> {
                 List<String> databaseNames = new ArrayList<>();
@@ -233,13 +303,15 @@ public class GlueHiveMetastore
 
                 return databaseNames;
             });
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public Optional<Table> getTable(HiveIdentity identity, String databaseName, String tableName) {
+    public Optional<Table> getTable(HiveIdentity identity, String databaseName, String tableName)
+    {
         try {
             GetTableResult result = stats.getGetTable().call(() ->
                     glueClient.getTable(new GetTableRequest()
@@ -247,39 +319,47 @@ public class GlueHiveMetastore
                             .withDatabaseName(databaseName)
                             .withName(tableName)));
             return Optional.of(GlueToPrestoConverter.convertTable(result.getTable(), databaseName));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             return Optional.empty();
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public Set<ColumnStatisticType> getSupportedColumnStatistics(Type type) {
+    public Set<ColumnStatisticType> getSupportedColumnStatistics(Type type)
+    {
         return columnStatisticsProvider.getSupportedColumnStatistics(type);
     }
 
-    private Table getExistingTable(HiveIdentity identity, String databaseName, String tableName) {
+    private Table getExistingTable(HiveIdentity identity, String databaseName, String tableName)
+    {
         return getTable(identity, databaseName, tableName)
                 .orElseThrow(() -> new TableNotFoundException(new SchemaTableName(databaseName, tableName)));
     }
 
     @Override
-    public PartitionStatistics getTableStatistics(HiveIdentity identity, Table table) {
+    public PartitionStatistics getTableStatistics(HiveIdentity identity, Table table)
+    {
         return new PartitionStatistics(getHiveBasicStatistics(table.getParameters()), columnStatisticsProvider.getTableColumnStatistics(table));
     }
 
     @Override
-    public Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, Table table, List<Partition> partitions) {
+    public Map<String, PartitionStatistics> getPartitionStatistics(HiveIdentity identity, Table table, List<Partition> partitions)
+    {
         return partitions.stream().collect(toImmutableMap(partition -> makePartitionName(table, partition), this::getPartitionStatistics));
     }
 
-    private PartitionStatistics getPartitionStatistics(Partition partition) {
+    private PartitionStatistics getPartitionStatistics(Partition partition)
+    {
         return new PartitionStatistics(getHiveBasicStatistics(partition.getParameters()), columnStatisticsProvider.getPartitionColumnStatistics(partition));
     }
 
     @Override
-    public void updateTableStatistics(HiveIdentity identity, String databaseName, String tableName, Function<PartitionStatistics, PartitionStatistics> update, AcidTransaction transaction) {
+    public void updateTableStatistics(HiveIdentity identity, String databaseName, String tableName, Function<PartitionStatistics, PartitionStatistics> update, AcidTransaction transaction)
+    {
         Table table = getExistingTable(identity, databaseName, tableName);
         if (transaction.isAcidTransactionRunning()) {
             table = Table.builder(table).setWriteId(OptionalLong.of(transaction.getWriteId())).build();
@@ -297,15 +377,18 @@ public class GlueHiveMetastore
                     .withCatalogId(catalogId)
                     .withDatabaseName(databaseName)
                     .withTableInput(tableInput));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public void updatePartitionStatistics(HiveIdentity identity, Table table, String partitionName, Function<PartitionStatistics, PartitionStatistics> update) {
+    public void updatePartitionStatistics(HiveIdentity identity, Table table, String partitionName, Function<PartitionStatistics, PartitionStatistics> update)
+    {
         List<String> partitionValues = toPartitionValues(partitionName);
         Partition partition = getPartition(identity, table, partitionValues)
                 .orElseThrow(() -> new PrestoException(HIVE_PARTITION_DROPPED_DURING_QUERY, "Statistics result does not contain entry for partition: " + partitionName));
@@ -325,15 +408,18 @@ public class GlueHiveMetastore
                     .withTableName(table.getTableName())
                     .withPartitionValueList(partition.getValues())
                     .withPartitionInput(partitionInput));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             throw new PartitionNotFoundException(new SchemaTableName(table.getDatabaseName(), table.getTableName()), partitionValues);
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public List<String> getAllTables(String databaseName) {
+    public List<String> getAllTables(String databaseName)
+    {
         try {
             return stats.getGetAllTables().call(() -> {
                 List<String> tableNames = new ArrayList<>();
@@ -354,22 +440,26 @@ public class GlueHiveMetastore
 
                 return tableNames;
             });
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             // database does not exist
             return ImmutableList.of();
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public synchronized List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue) {
+    public synchronized List<String> getTablesWithParameter(String databaseName, String parameterKey, String parameterValue)
+    {
         // TODO
         throw new UnsupportedOperationException("getTablesWithParameter for GlueHiveMetastore is not implemented");
     }
 
     @Override
-    public List<String> getAllViews(String databaseName) {
+    public List<String> getAllViews(String databaseName)
+    {
         try {
             return stats.getGetAllViews().call(() -> {
                 List<String> views = new ArrayList<>();
@@ -389,16 +479,19 @@ public class GlueHiveMetastore
 
                 return views;
             });
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             // database does not exist
             return ImmutableList.of();
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public void createDatabase(HiveIdentity identity, Database database) {
+    public void createDatabase(HiveIdentity identity, Database database)
+    {
         if (database.getLocation().isEmpty() && defaultDir.isPresent()) {
             String databaseLocation = new Path(defaultDir.get(), database.getDatabaseName()).toString();
             database = Database.builder(database)
@@ -410,9 +503,11 @@ public class GlueHiveMetastore
             DatabaseInput databaseInput = GlueInputConverter.convertDatabase(database);
             stats.getCreateDatabase().call(() ->
                     glueClient.createDatabase(new CreateDatabaseRequest().withCatalogId(catalogId).withDatabaseInput(databaseInput)));
-        } catch (AlreadyExistsException e) {
+        }
+        catch (AlreadyExistsException e) {
             throw new SchemaAlreadyExistsException(database.getDatabaseName());
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
 
@@ -422,19 +517,23 @@ public class GlueHiveMetastore
     }
 
     @Override
-    public void dropDatabase(HiveIdentity identity, String databaseName) {
+    public void dropDatabase(HiveIdentity identity, String databaseName)
+    {
         try {
             stats.getDropDatabase().call(() ->
                     glueClient.deleteDatabase(new DeleteDatabaseRequest().withCatalogId(catalogId).withName(databaseName)));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             throw new SchemaNotFoundException(databaseName);
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public void renameDatabase(HiveIdentity identity, String databaseName, String newDatabaseName) {
+    public void renameDatabase(HiveIdentity identity, String databaseName, String newDatabaseName)
+    {
         try {
             Database database = getDatabase(databaseName).orElseThrow(() -> new SchemaNotFoundException(databaseName));
             DatabaseInput renamedDatabase = GlueInputConverter.convertDatabase(database).withName(newDatabaseName);
@@ -443,18 +542,21 @@ public class GlueHiveMetastore
                             .withCatalogId(catalogId)
                             .withName(databaseName)
                             .withDatabaseInput(renamedDatabase)));
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public void setDatabaseOwner(HiveIdentity identity, String databaseName, HivePrincipal principal) {
+    public void setDatabaseOwner(HiveIdentity identity, String databaseName, HivePrincipal principal)
+    {
         throw new PrestoException(NOT_SUPPORTED, "setting the database owner is not supported by Glue");
     }
 
     @Override
-    public void createTable(HiveIdentity identity, Table table, PrincipalPrivileges principalPrivileges) {
+    public void createTable(HiveIdentity identity, Table table, PrincipalPrivileges principalPrivileges)
+    {
         try {
             TableInput input = GlueInputConverter.convertTable(table);
             stats.getCreateTable().call(() ->
@@ -462,17 +564,21 @@ public class GlueHiveMetastore
                             .withCatalogId(catalogId)
                             .withDatabaseName(table.getDatabaseName())
                             .withTableInput(input)));
-        } catch (AlreadyExistsException e) {
+        }
+        catch (AlreadyExistsException e) {
             throw new TableAlreadyExistsException(new SchemaTableName(table.getDatabaseName(), table.getTableName()));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             throw new SchemaNotFoundException(table.getDatabaseName());
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public void dropTable(HiveIdentity identity, String databaseName, String tableName, boolean deleteData) {
+    public void dropTable(HiveIdentity identity, String databaseName, String tableName, boolean deleteData)
+    {
         Table table = getExistingTable(identity, databaseName, tableName);
 
         try {
@@ -481,7 +587,8 @@ public class GlueHiveMetastore
                             .withCatalogId(catalogId)
                             .withDatabaseName(databaseName)
                             .withName(tableName)));
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
 
@@ -491,21 +598,25 @@ public class GlueHiveMetastore
         }
     }
 
-    private static boolean isManagedTable(Table table) {
+    private static boolean isManagedTable(Table table)
+    {
         return table.getTableType().equals(MANAGED_TABLE.name());
     }
 
-    private static void deleteDir(HdfsContext context, HdfsEnvironment hdfsEnvironment, Path path, boolean recursive) {
+    private static void deleteDir(HdfsContext context, HdfsEnvironment hdfsEnvironment, Path path, boolean recursive)
+    {
         try {
             hdfsEnvironment.getFileSystem(context, path).delete(path, recursive);
-        } catch (Exception e) {
+        }
+        catch (Exception e) {
             // don't fail if unable to delete path
             log.warn(e, "Failed to delete path: " + path.toString());
         }
     }
 
     @Override
-    public void replaceTable(HiveIdentity identity, String databaseName, String tableName, Table newTable, PrincipalPrivileges principalPrivileges) {
+    public void replaceTable(HiveIdentity identity, String databaseName, String tableName, Table newTable, PrincipalPrivileges principalPrivileges)
+    {
         try {
             TableInput newTableInput = GlueInputConverter.convertTable(newTable);
             stats.getReplaceTable().call(() ->
@@ -513,25 +624,30 @@ public class GlueHiveMetastore
                             .withCatalogId(catalogId)
                             .withDatabaseName(databaseName)
                             .withTableInput(newTableInput)));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public void renameTable(HiveIdentity identity, String databaseName, String tableName, String newDatabaseName, String newTableName) {
+    public void renameTable(HiveIdentity identity, String databaseName, String tableName, String newDatabaseName, String newTableName)
+    {
         throw new PrestoException(NOT_SUPPORTED, "Table rename is not yet supported by Glue service");
     }
 
     @Override
-    public void commentTable(HiveIdentity identity, String databaseName, String tableName, Optional<String> comment) {
+    public void commentTable(HiveIdentity identity, String databaseName, String tableName, Optional<String> comment)
+    {
         throw new PrestoException(NOT_SUPPORTED, "Table comment is not yet supported by Glue service");
     }
 
     @Override
-    public void setTableOwner(HiveIdentity identity, String databaseName, String tableName, HivePrincipal principal) {
+    public void setTableOwner(HiveIdentity identity, String databaseName, String tableName, HivePrincipal principal)
+    {
         // TODO Add role support https://github.com/prestosql/presto/issues/5706
         if (principal.getType() != USER) {
             throw new PrestoException(NOT_SUPPORTED, "Setting table owner type as a role is not supported");
@@ -547,20 +663,24 @@ public class GlueHiveMetastore
                             .withCatalogId(catalogId)
                             .withDatabaseName(databaseName)
                             .withTableInput(newTableInput)));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             throw new TableNotFoundException(new SchemaTableName(databaseName, tableName));
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public void commentColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, Optional<String> comment) {
+    public void commentColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, Optional<String> comment)
+    {
         throw new PrestoException(NOT_SUPPORTED, "Column comment is not yet supported by Glue service");
     }
 
     @Override
-    public void addColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, HiveType columnType, String columnComment) {
+    public void addColumn(HiveIdentity identity, String databaseName, String tableName, String columnName, HiveType columnType, String columnComment)
+    {
         Table oldTable = getExistingTable(identity, databaseName, tableName);
         Table newTable = Table.builder(oldTable)
                 .addDataColumn(new Column(columnName, columnType, Optional.ofNullable(columnComment)))
@@ -569,7 +689,8 @@ public class GlueHiveMetastore
     }
 
     @Override
-    public void renameColumn(HiveIdentity identity, String databaseName, String tableName, String oldColumnName, String newColumnName) {
+    public void renameColumn(HiveIdentity identity, String databaseName, String tableName, String oldColumnName, String newColumnName)
+    {
         Table oldTable = getExistingTable(identity, databaseName, tableName);
         if (oldTable.getPartitionColumns().stream().anyMatch(c -> c.getName().equals(oldColumnName))) {
             throw new PrestoException(NOT_SUPPORTED, "Renaming partition columns is not supported");
@@ -579,7 +700,8 @@ public class GlueHiveMetastore
         for (Column column : oldTable.getDataColumns()) {
             if (column.getName().equals(oldColumnName)) {
                 newDataColumns.add(new Column(newColumnName, column.getType(), column.getComment()));
-            } else {
+            }
+            else {
                 newDataColumns.add(column);
             }
         }
@@ -591,7 +713,8 @@ public class GlueHiveMetastore
     }
 
     @Override
-    public void dropColumn(HiveIdentity identity, String databaseName, String tableName, String columnName) {
+    public void dropColumn(HiveIdentity identity, String databaseName, String tableName, String columnName)
+    {
         verifyCanDropColumn(this, identity, databaseName, tableName, columnName);
         Table oldTable = getExistingTable(identity, databaseName, tableName);
 
@@ -612,7 +735,8 @@ public class GlueHiveMetastore
     }
 
     @Override
-    public Optional<Partition> getPartition(HiveIdentity identity, Table table, List<String> partitionValues) {
+    public Optional<Partition> getPartition(HiveIdentity identity, Table table, List<String> partitionValues)
+    {
         try {
             GetPartitionResult result = stats.getGetPartition().call(() ->
                     glueClient.getPartition(new GetPartitionRequest()
@@ -621,9 +745,11 @@ public class GlueHiveMetastore
                             .withTableName(table.getTableName())
                             .withPartitionValues(partitionValues)));
             return Optional.of(new GluePartitionConverter(table).apply(result.getPartition()));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             return Optional.empty();
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
@@ -634,7 +760,8 @@ public class GlueHiveMetastore
             String databaseName,
             String tableName,
             List<String> columnNames,
-            TupleDomain<String> partitionKeysFilter) {
+            TupleDomain<String> partitionKeysFilter)
+    {
         if (partitionKeysFilter.isNone()) {
             return Optional.of(ImmutableList.of());
         }
@@ -648,7 +775,8 @@ public class GlueHiveMetastore
         return Optional.of(buildPartitionNames(table.getPartitionColumns(), partitions));
     }
 
-    private List<Partition> getPartitions(Table table, String expression) {
+    private List<Partition> getPartitions(Table table, String expression)
+    {
         if (partitionSegments == 1) {
             return getPartitions(table, expression, null);
         }
@@ -666,7 +794,8 @@ public class GlueHiveMetastore
                 Future<List<Partition>> futurePartitions = completionService.take();
                 partitions.addAll(futurePartitions.get());
             }
-        } catch (ExecutionException | InterruptedException e) {
+        }
+        catch (ExecutionException | InterruptedException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
@@ -677,7 +806,8 @@ public class GlueHiveMetastore
         return partitions;
     }
 
-    private List<Partition> getPartitions(Table table, String expression, @Nullable Segment segment) {
+    private List<Partition> getPartitions(Table table, String expression, @Nullable Segment segment)
+    {
         try {
             return stats.getGetPartitions().call(() -> {
                 List<Partition> partitions = new ArrayList<>();
@@ -704,12 +834,14 @@ public class GlueHiveMetastore
 
                 return partitions;
             });
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
-    private static List<String> buildPartitionNames(List<Column> partitionColumns, List<Partition> partitions) {
+    private static List<String> buildPartitionNames(List<Column> partitionColumns, List<Partition> partitions)
+    {
         return mappedCopy(partitions, partition -> makePartitionName(partitionColumns, partition.getValues()));
     }
 
@@ -723,11 +855,13 @@ public class GlueHiveMetastore
      * @return Mapping of partition name to partition object
      */
     @Override
-    public Map<String, Optional<Partition>> getPartitionsByNames(HiveIdentity identity, Table table, List<String> partitionNames) {
+    public Map<String, Optional<Partition>> getPartitionsByNames(HiveIdentity identity, Table table, List<String> partitionNames)
+    {
         return stats.getGetPartitionByName().call(() -> getPartitionsByNames(table, partitionNames));
     }
 
-    private Map<String, Optional<Partition>> getPartitionsByNames(Table table, List<String> partitionNames) {
+    private Map<String, Optional<Partition>> getPartitionsByNames(Table table, List<String> partitionNames)
+    {
         requireNonNull(partitionNames, "partitionNames is null");
         if (partitionNames.isEmpty()) {
             return ImmutableMap.of();
@@ -748,7 +882,8 @@ public class GlueHiveMetastore
         return resultBuilder.build();
     }
 
-    private List<Partition> batchGetPartition(Table table, List<String> partitionNames) {
+    private List<Partition> batchGetPartition(Table table, List<String> partitionNames)
+    {
         try {
             List<Future<BatchGetPartitionResult>> batchGetPartitionFutures = new ArrayList<>();
 
@@ -771,7 +906,8 @@ public class GlueHiveMetastore
             }
 
             return resultsBuilder.build();
-        } catch (AmazonServiceException | InterruptedException | ExecutionException e) {
+        }
+        catch (AmazonServiceException | InterruptedException | ExecutionException e) {
             if (e instanceof InterruptedException) {
                 Thread.currentThread().interrupt();
             }
@@ -780,7 +916,8 @@ public class GlueHiveMetastore
     }
 
     @Override
-    public void addPartitions(HiveIdentity identity, String databaseName, String tableName, List<PartitionWithStatistics> partitions) {
+    public void addPartitions(HiveIdentity identity, String databaseName, String tableName, List<PartitionWithStatistics> partitions)
+    {
         try {
             stats.getAddPartitions().call(() -> {
                 List<Future<BatchCreatePartitionResult>> futures = new ArrayList<>();
@@ -798,7 +935,8 @@ public class GlueHiveMetastore
                     try {
                         BatchCreatePartitionResult result = future.get();
                         propagatePartitionErrorToPrestoException(databaseName, tableName, result.getErrors());
-                    } catch (InterruptedException e) {
+                    }
+                    catch (InterruptedException e) {
                         Thread.currentThread().interrupt();
                         throw new PrestoException(HIVE_METASTORE_ERROR, e);
                     }
@@ -806,12 +944,14 @@ public class GlueHiveMetastore
 
                 return null;
             });
-        } catch (AmazonServiceException | ExecutionException e) {
+        }
+        catch (AmazonServiceException | ExecutionException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
-    private static void propagatePartitionErrorToPrestoException(String databaseName, String tableName, List<PartitionError> partitionErrors) {
+    private static void propagatePartitionErrorToPrestoException(String databaseName, String tableName, List<PartitionError> partitionErrors)
+    {
         if (partitionErrors != null && !partitionErrors.isEmpty()) {
             ErrorDetail errorDetail = partitionErrors.get(0).getErrorDetail();
             String glueExceptionCode = errorDetail.getErrorCode();
@@ -828,7 +968,8 @@ public class GlueHiveMetastore
     }
 
     @Override
-    public void dropPartition(HiveIdentity identity, String databaseName, String tableName, List<String> parts, boolean deleteData) {
+    public void dropPartition(HiveIdentity identity, String databaseName, String tableName, List<String> parts, boolean deleteData)
+    {
         Table table = getExistingTable(identity, databaseName, tableName);
         Partition partition = getPartition(identity, table, parts)
                 .orElseThrow(() -> new PartitionNotFoundException(new SchemaTableName(databaseName, tableName), parts));
@@ -840,7 +981,8 @@ public class GlueHiveMetastore
                             .withDatabaseName(databaseName)
                             .withTableName(tableName)
                             .withPartitionValues(parts)));
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
 
@@ -851,7 +993,8 @@ public class GlueHiveMetastore
     }
 
     @Override
-    public void alterPartition(HiveIdentity identity, String databaseName, String tableName, PartitionWithStatistics partition) {
+    public void alterPartition(HiveIdentity identity, String databaseName, String tableName, PartitionWithStatistics partition)
+    {
         try {
             PartitionInput newPartition = GlueInputConverter.convertPartition(partition, columnStatisticsProvider);
             stats.getAlterPartition().call(() ->
@@ -861,45 +1004,54 @@ public class GlueHiveMetastore
                             .withTableName(tableName)
                             .withPartitionInput(newPartition)
                             .withPartitionValueList(partition.getPartition().getValues())));
-        } catch (EntityNotFoundException e) {
+        }
+        catch (EntityNotFoundException e) {
             throw new PartitionNotFoundException(new SchemaTableName(databaseName, tableName), partition.getPartition().getValues());
-        } catch (AmazonServiceException e) {
+        }
+        catch (AmazonServiceException e) {
             throw new PrestoException(HIVE_METASTORE_ERROR, e);
         }
     }
 
     @Override
-    public void createRole(String role, String grantor) {
+    public void createRole(String role, String grantor)
+    {
         throw new PrestoException(NOT_SUPPORTED, "createRole is not supported by Glue");
     }
 
     @Override
-    public void dropRole(String role) {
+    public void dropRole(String role)
+    {
         throw new PrestoException(NOT_SUPPORTED, "dropRole is not supported by Glue");
     }
 
     @Override
-    public Set<String> listRoles() {
+    public Set<String> listRoles()
+    {
         return ImmutableSet.of(PUBLIC_ROLE_NAME);
     }
 
     @Override
-    public void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor) {
+    public void grantRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor)
+    {
         throw new PrestoException(NOT_SUPPORTED, "grantRoles is not supported by Glue");
     }
 
     @Override
-    public void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor) {
+    public void revokeRoles(Set<String> roles, Set<HivePrincipal> grantees, boolean adminOption, HivePrincipal grantor)
+    {
         throw new PrestoException(NOT_SUPPORTED, "revokeRoles is not supported by Glue");
     }
 
     @Override
-    public Set<RoleGrant> listGrantedPrincipals(String role) {
+    public Set<RoleGrant> listGrantedPrincipals(String role)
+    {
         throw new PrestoException(NOT_SUPPORTED, "listPrincipals is not supported by Glue");
     }
 
     @Override
-    public Set<RoleGrant> listRoleGrants(HivePrincipal principal) {
+    public Set<RoleGrant> listRoleGrants(HivePrincipal principal)
+    {
         if (principal.getType() == USER) {
             return ImmutableSet.of(new RoleGrant(principal.toPrestoPrincipal(), PUBLIC_ROLE_NAME, false));
         }
@@ -907,22 +1059,26 @@ public class GlueHiveMetastore
     }
 
     @Override
-    public void grantTablePrivileges(String databaseName, String tableName, String tableOwner, HivePrincipal grantee, Set<HivePrivilegeInfo> privileges) {
+    public void grantTablePrivileges(String databaseName, String tableName, String tableOwner, HivePrincipal grantee, Set<HivePrivilegeInfo> privileges)
+    {
         throw new PrestoException(NOT_SUPPORTED, "grantTablePrivileges is not supported by Glue");
     }
 
     @Override
-    public void revokeTablePrivileges(String databaseName, String tableName, String tableOwner, HivePrincipal grantee, Set<HivePrivilegeInfo> privileges) {
+    public void revokeTablePrivileges(String databaseName, String tableName, String tableOwner, HivePrincipal grantee, Set<HivePrivilegeInfo> privileges)
+    {
         throw new PrestoException(NOT_SUPPORTED, "revokeTablePrivileges is not supported by Glue");
     }
 
     @Override
-    public Set<HivePrivilegeInfo> listTablePrivileges(String databaseName, String tableName, String tableOwner, Optional<HivePrincipal> principal) {
+    public Set<HivePrivilegeInfo> listTablePrivileges(String databaseName, String tableName, String tableOwner, Optional<HivePrincipal> principal)
+    {
         return ImmutableSet.of();
     }
 
     @Override
-    public boolean isImpersonationEnabled() {
+    public boolean isImpersonationEnabled()
+    {
         return false;
     }
 }

@@ -13,7 +13,6 @@
  */
 package io.prestosql.plugin.hive.metastore.glue;
 
-import com.amazonaws.services.glue.model.TableInput;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import io.prestosql.plugin.hive.metastore.HiveColumnStatistics;
@@ -29,30 +28,37 @@ import java.util.Set;
 import static io.prestosql.spi.StandardErrorCode.NOT_SUPPORTED;
 
 public class DisabledGlueColumnStatisticsProvider
-        implements GlueColumnStatisticsProvider {
+        implements GlueColumnStatisticsProvider
+{
     @Override
-    public Set<ColumnStatisticType> getSupportedColumnStatistics(Type type) {
+    public Set<ColumnStatisticType> getSupportedColumnStatistics(Type type)
+    {
         return ImmutableSet.of();
     }
 
     @Override
-    public Map<String, HiveColumnStatistics> getTableColumnStatistics(Table table) {
+    public Map<String, HiveColumnStatistics> getTableColumnStatistics(Table table)
+    {
         return ImmutableMap.of();
     }
 
     @Override
-    public Map<String, HiveColumnStatistics> getPartitionColumnStatistics(Partition partition) {
+    public Map<String, HiveColumnStatistics> getPartitionColumnStatistics(Partition partition)
+    {
         return ImmutableMap.of();
     }
+
     @Override
-    public void updateTableColumnStatistics(Table table, Map<String, HiveColumnStatistics> columnStatistics) {
+    public void updateTableColumnStatistics(Table table, Map<String, HiveColumnStatistics> columnStatistics)
+    {
         if (!columnStatistics.isEmpty()) {
             throw new PrestoException(NOT_SUPPORTED, "Glue metastore column level statistics are disabled");
         }
     }
 
     @Override
-    public void updatePartitionStatistics(Partition partition, Map<String, HiveColumnStatistics> columnStatistics, boolean forPartitionCreation) {
+    public void updatePartitionStatistics(Partition partition, Map<String, HiveColumnStatistics> columnStatistics, boolean forPartitionCreation)
+    {
         if (!columnStatistics.isEmpty()) {
             throw new PrestoException(NOT_SUPPORTED, "Glue metastore column level statistics are disabled");
         }

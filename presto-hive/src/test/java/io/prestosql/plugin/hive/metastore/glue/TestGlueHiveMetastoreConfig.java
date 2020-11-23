@@ -18,11 +18,15 @@ import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static io.airlift.configuration.testing.ConfigAssertions.*;
+import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
+import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
+import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
 
-public class TestGlueHiveMetastoreConfig {
+public class TestGlueHiveMetastoreConfig
+{
     @Test
-    public void testDefaults() {
+    public void testDefaults()
+    {
         assertRecordedDefaults(recordDefaults(GlueHiveMetastoreConfig.class)
                 .setGlueRegion(null)
                 .setGlueEndpointUrl(null)
@@ -45,7 +49,8 @@ public class TestGlueHiveMetastoreConfig {
     }
 
     @Test
-    public void testExplicitPropertyMapping() {
+    public void testExplicitPropertyMapping()
+    {
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("hive.metastore.glue.region", "us-east-1")
                 .put("hive.metastore.glue.endpoint-url", "http://foo.bar")

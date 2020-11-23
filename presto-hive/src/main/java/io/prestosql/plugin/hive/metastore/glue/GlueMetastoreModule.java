@@ -36,13 +36,16 @@ import static java.util.concurrent.Executors.newCachedThreadPool;
 import static org.weakref.jmx.guice.ExportBinder.newExporter;
 
 public class GlueMetastoreModule
-        extends AbstractConfigurationAwareModule {
+        extends AbstractConfigurationAwareModule
+{
     @Override
-    protected void setup(Binder binder) {
+    protected void setup(Binder binder)
+    {
         configBinder(binder).bindConfig(GlueHiveMetastoreConfig.class);
         newOptionalBinder(binder, Key.get(RequestHandler2.class, ForGlueHiveMetastore.class));
 
-        newOptionalBinder(binder, Key.get(new TypeLiteral<Predicate<Table>>() {
+        newOptionalBinder(binder, Key.get(new TypeLiteral<Predicate<Table>>()
+        {
         }, ForGlueHiveMetastore.class))
                 .setDefault().toProvider(DefaultGlueMetastoreTableFilterProvider.class).in(Scopes.SINGLETON);
 
@@ -61,7 +64,8 @@ public class GlueMetastoreModule
     @Provides
     @Singleton
     @ForGlueHiveMetastore
-    public Executor createPartitionsExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig) {
+    public Executor createPartitionsExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig)
+    {
         if (hiveConfig.getGetPartitionThreads() == 1) {
             return directExecutor();
         }
@@ -74,7 +78,8 @@ public class GlueMetastoreModule
     @Provides
     @Singleton
     @ForGlueHiveMetastore
-    public Executor createStatisticsReadExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig) {
+    public Executor createStatisticsReadExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig)
+    {
         if (hiveConfig.getReadStatisticsThreads() == 1) {
             return directExecutor();
         }
@@ -87,7 +92,8 @@ public class GlueMetastoreModule
     @Provides
     @Singleton
     @ForGlueHiveMetastore
-    public Executor createStatisticsWriteExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig) {
+    public Executor createStatisticsWriteExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig)
+    {
         if (hiveConfig.getWriteStatisticsThreads() == 1) {
             return directExecutor();
         }
@@ -95,5 +101,4 @@ public class GlueMetastoreModule
                 newCachedThreadPool(daemonThreadsNamed("hive-glue-statistics-write-%s")),
                 hiveConfig.getWriteStatisticsThreads());
     }
-
 }

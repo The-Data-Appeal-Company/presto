@@ -22,7 +22,8 @@ import io.prestosql.spi.type.Type;
 import java.util.Map;
 import java.util.Set;
 
-public interface GlueColumnStatisticsProvider {
+public interface GlueColumnStatisticsProvider
+{
     Set<ColumnStatisticType> getSupportedColumnStatistics(Type type);
 
     Map<String, HiveColumnStatistics> getTableColumnStatistics(Table table);
