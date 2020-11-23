@@ -15,6 +15,8 @@ package io.prestosql.plugin.hive.metastore.glue;
 
 import com.google.common.collect.ImmutableList;
 import io.airlift.concurrent.BoundedExecutor;
+import io.airlift.log.Level;
+import io.airlift.log.Logging;
 import io.prestosql.plugin.hive.AbstractTestHiveLocal;
 import io.prestosql.plugin.hive.HiveMetastoreClosure;
 import io.prestosql.plugin.hive.HiveTestUtils;
@@ -31,12 +33,7 @@ import io.prestosql.spi.connector.TableNotFoundException;
 import io.prestosql.spi.predicate.Domain;
 import io.prestosql.spi.predicate.Range;
 import io.prestosql.spi.predicate.TupleDomain;
-import io.prestosql.spi.type.BigintType;
-import io.prestosql.spi.type.DateType;
-import io.prestosql.spi.type.IntegerType;
-import io.prestosql.spi.type.SmallintType;
-import io.prestosql.spi.type.TinyintType;
-import io.prestosql.spi.type.VarcharType;
+import io.prestosql.spi.type.*;
 import org.testng.annotations.BeforeClass;
 import org.testng.annotations.Test;
 
@@ -69,8 +66,7 @@ import static org.testng.Assert.assertTrue;
  */
 @Test(singleThreaded = true)
 public class TestHiveGlueMetastore
-        extends AbstractTestHiveLocal
-{
+        extends AbstractTestHiveLocal {
     private static final HiveIdentity HIVE_CONTEXT = new HiveIdentity(SESSION);
     private static final List<ColumnMetadata> CREATE_TABLE_COLUMNS = ImmutableList.<ColumnMetadata>builder()
             .add(new ColumnMetadata("id", BigintType.BIGINT))
@@ -112,15 +108,13 @@ public class TestHiveGlueMetastore
             .build();
     private static final List<String> VARCHAR_PARTITION_VALUES = ImmutableList.of("2020-01-01", "2020-02-01", "2020-03-01", "2020-04-01");
 
-    public TestHiveGlueMetastore()
-    {
+    public TestHiveGlueMetastore() {
         super("test_glue" + randomUUID().toString().toLowerCase(ENGLISH).replace("-", ""));
     }
 
     @BeforeClass(alwaysRun = true)
     @Override
-    public void initialize()
-    {
+    public void initialize() {
         super.initialize();
         // uncomment to get extra AWS debug information
 //        Logging logging = Logging.initialize();
@@ -128,17 +122,18 @@ public class TestHiveGlueMetastore
     }
 
     @Override
-    protected HiveMetastore createMetastore(File tempDir)
-    {
+    protected HiveMetastore createMetastore(File tempDir) {
         GlueHiveMetastoreConfig glueConfig = new GlueHiveMetastoreConfig();
         glueConfig.setDefaultWarehouseDir(tempDir.toURI().toString());
         glueConfig.setAssumeCanonicalPartitionKeys(true);
+        glueConfig.setEnableColumnStatistics(true);
 
         Executor executor = new BoundedExecutor(this.executor, 10);
         return new GlueHiveMetastore(
                 HDFS_ENVIRONMENT,
                 glueConfig,
-                new DisabledGlueColumnStatisticsProvider(),
+                executor,
+                executor,
                 executor,
                 Optional.empty(),
                 new DefaultGlueMetastoreTableFilterProvider(
@@ -147,52 +142,66 @@ public class TestHiveGlueMetastore
     }
 
     @Override
-    public void testRenameTable()
-    {
+    public void testRenameTable() {
         // rename table is not yet supported by Glue
     }
 
     @Override
-    public void testPartitionStatisticsSampling()
-    {
-        // Glue metastore does not support column level statistics
+    public void testUpdateTableColumnStatistics() throws Exception {
+        // The original implementation AbstractTestHiveClient#testUpdateTableColumnStatistics assumes each update call to metastore would override
+        // the previous update call but this is not entirely true for Glue.
+        // For example, there are 5 columns of a table. if you update 2 columns and then update the remaining 3 columns in two separate calls.
+        // The second update call would not override the first update call (assume the first 2 and remaining 3 columns are exclusive).
+        // Following this rationale, provide an empty column stat does not clear all the existing column stats.
+        // (Glue actually does not accept the empty column stat).
+        SchemaTableName tableName = temporaryTable("update_table_column_statistics");
+        try {
+            doCreateEmptyTable(tableName, ORC, STATISTICS_TABLE_COLUMNS);
+            // STATISTICS_1_1 must be subset of STATISTICS_1
+            testUpdateTableStatistics(tableName, EMPTY_TABLE_STATISTICS, STATISTICS_1_1, STATISTICS_1);
+        } finally {
+            dropTable(tableName);
+        }
     }
 
     @Override
-    public void testUpdateTableColumnStatistics()
-    {
-        // column statistics are not supported by Glue
+    public void testUpdateTableColumnStatisticsEmptyOptionalFields() throws Exception {
+        // this test is not really meaningful for Glue, for numeric columns, min/max stat should always be available
+        // The only exception is when all rows are NULLs. Glue requires min/max to be set.
     }
 
     @Override
-    public void testUpdateTableColumnStatisticsEmptyOptionalFields()
-    {
-        // column statistics are not supported by Glue
+    public void testUpdatePartitionColumnStatisticsEmptyOptionalFields() throws Exception {
+        // this test is not really meaningful for Glue, for numeric columns, min/max stat should always be available
+        // The only exception is when all rows are NULLs. Glue requires min/max to be set.
     }
 
     @Override
-    public void testUpdatePartitionColumnStatistics()
-    {
-        // column statistics are not supported by Glue
-    }
-
-    @Override
-    public void testUpdatePartitionColumnStatisticsEmptyOptionalFields()
-    {
-        // column statistics are not supported by Glue
+    public void testUpdatePartitionColumnStatistics() throws Exception {
+       // super.testUpdatePartitionColumnStatistics();
+        SchemaTableName tableName = temporaryTable("update_partition_column_statistics");
+        try {
+            createDummyPartitionedTable(tableName, STATISTICS_PARTITIONED_TABLE_COLUMNS);
+            testUpdatePartitionStatistics(
+                    tableName,
+                    EMPTY_TABLE_STATISTICS,
+                    ImmutableList.of(STATISTICS_1_1, STATISTICS_1),
+                    ImmutableList.of(STATISTICS_1_2, STATISTICS_1));
+        }
+        finally {
+            dropTable(tableName);
+        }
     }
 
     @Override
     public void testStorePartitionWithStatistics()
-            throws Exception
-    {
+            throws Exception {
         testStorePartitionWithStatistics(STATISTICS_PARTITIONED_TABLE_COLUMNS, BASIC_STATISTICS_1, BASIC_STATISTICS_2, BASIC_STATISTICS_1, EMPTY_TABLE_STATISTICS);
     }
 
     @Override
     public void testGetPartitions()
-            throws Exception
-    {
+            throws Exception {
         try {
             SchemaTableName tableName = temporaryTable("get_partitions");
             createDummyPartitionedTable(tableName, CREATE_TABLE_COLUMNS_PARTITIONED);
@@ -204,15 +213,13 @@ public class TestHiveGlueMetastore
                     ImmutableList.of("ds"), TupleDomain.all());
             assertTrue(partitionNames.isPresent());
             assertEquals(partitionNames.get(), ImmutableList.of("ds=2016-01-01", "ds=2016-01-02"));
-        }
-        finally {
+        } finally {
             dropTable(tablePartitionFormat);
         }
     }
 
     @Test
-    public void testGetDatabasesLogsStats()
-    {
+    public void testGetDatabasesLogsStats() {
         GlueHiveMetastore metastore = (GlueHiveMetastore) getMetastoreClient();
         GlueMetastoreStats stats = metastore.getStats();
         double initialCallCount = stats.getGetAllDatabases().getTime().getAllTime().getCount();
@@ -224,8 +231,7 @@ public class TestHiveGlueMetastore
     }
 
     @Test
-    public void testGetDatabaseFailureLogsStats()
-    {
+    public void testGetDatabaseFailureLogsStats() {
         GlueHiveMetastore metastore = (GlueHiveMetastore) getMetastoreClient();
         GlueMetastoreStats stats = metastore.getStats();
         long initialFailureCount = stats.getGetDatabase().getTotalFailures().getTotalCount();
@@ -237,8 +243,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterVarChar()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> singleEquals = new PartitionFilterBuilder()
                 .addStringValues(PARTITION_KEY, "2020-01-01")
                 .build();
@@ -274,8 +279,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterBigInt()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> singleEquals = new PartitionFilterBuilder()
                 .addBigintValues(PARTITION_KEY, 1000L)
                 .build();
@@ -311,8 +315,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterInteger()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> singleEquals = new PartitionFilterBuilder()
                 .addIntegerValues(PARTITION_KEY, 1000L)
                 .build();
@@ -348,8 +351,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterSmallInt()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> singleEquals = new PartitionFilterBuilder()
                 .addSmallintValues(PARTITION_KEY, 1000L)
                 .build();
@@ -385,8 +387,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterTinyInt()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> singleEquals = new PartitionFilterBuilder()
                 .addTinyintValues(PARTITION_KEY, 127L)
                 .build();
@@ -422,8 +423,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterTinyIntNegatives()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> singleEquals = new PartitionFilterBuilder()
                 .addTinyintValues(PARTITION_KEY, -128L)
                 .build();
@@ -459,8 +459,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterDecimal()
-            throws Exception
-    {
+            throws Exception {
         String value1 = "1.000";
         String value2 = "10.134";
         String value3 = "25.111";
@@ -502,8 +501,7 @@ public class TestHiveGlueMetastore
     // we don't presently know how to properly convert a Date type into a string that is compatible with Glue.
     @Test
     public void testGetPartitionsFilterDate()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> singleEquals = new PartitionFilterBuilder()
                 .addDateValues(PARTITION_KEY, 18000L)
                 .build();
@@ -548,8 +546,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterTwoPartitionKeys()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> equalsFilter = new PartitionFilterBuilder()
                 .addStringValues(PARTITION_KEY, "2020-03-01")
                 .addBigintValues(PARTITION_KEY2, 300L)
@@ -582,8 +579,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterMaxLengthWildcard()
-            throws Exception
-    {
+            throws Exception {
         // this filter string will exceed the 2048 char limit set by glue, and we expect the filter to revert to the wildcard
         TupleDomain<String> filter = new PartitionFilterBuilder()
                 .addStringValues(PARTITION_KEY, "x".repeat(2048))
@@ -600,8 +596,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterTwoPartitionKeysPartialQuery()
-            throws Exception
-    {
+            throws Exception {
         // we expect the second constraint to still be present and provide filtering
         TupleDomain<String> equalsFilter = new PartitionFilterBuilder()
                 .addStringValues(PARTITION_KEY, "x".repeat(2048))
@@ -622,8 +617,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterNone()
-            throws Exception
-    {
+            throws Exception {
         // test both a global none and that with a single column none, and a valid domain with none()
         TupleDomain<String> noneFilter = new PartitionFilterBuilder()
                 .addDomain(PARTITION_KEY, Domain.none(VarcharType.VARCHAR))
@@ -638,8 +632,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterNotNull()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> notNullFilter = new PartitionFilterBuilder()
                 .addDomain(PARTITION_KEY, Domain.notNull(VarcharType.VARCHAR))
                 .build();
@@ -653,8 +646,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterIsNull()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> isNullFilter = new PartitionFilterBuilder()
                 .addDomain(PARTITION_KEY, Domain.onlyNull(VarcharType.VARCHAR))
                 .build();
@@ -668,8 +660,7 @@ public class TestHiveGlueMetastore
 
     @Test
     public void testGetPartitionsFilterIsNullWithValue()
-            throws Exception
-    {
+            throws Exception {
         TupleDomain<String> isNullFilter = new PartitionFilterBuilder()
                 .addDomain(PARTITION_KEY, Domain.onlyNull(VarcharType.VARCHAR))
                 .build();
@@ -689,8 +680,7 @@ public class TestHiveGlueMetastore
             List<String> partitionStringValues,
             List<TupleDomain<String>> filterList,
             List<List<String>> expectedSingleValueList)
-            throws Exception
-    {
+            throws Exception {
         List<PartitionValues> partitionValuesList = partitionStringValues.stream()
                 .map(PartitionValues::make)
                 .collect(toImmutableList());
@@ -713,8 +703,7 @@ public class TestHiveGlueMetastore
             List<PartitionValues> partitionValues,
             List<TupleDomain<String>> filterList,
             List<List<PartitionValues>> expectedValuesList)
-            throws Exception
-    {
+            throws Exception {
         try (CloseableSchamaTableName closeableTableName = new CloseableSchamaTableName(temporaryTable(("get_partitions")))) {
             SchemaTableName tableName = closeableTableName.getSchemaTableName();
             createDummyPartitionedTable(tableName, columnMetadata, partitionColumnNames, partitionValues);
@@ -743,8 +732,7 @@ public class TestHiveGlueMetastore
     }
 
     private void createDummyPartitionedTable(SchemaTableName tableName, List<ColumnMetadata> columns, List<String> partitionColumnNames, List<PartitionValues> partitionValues)
-            throws Exception
-    {
+            throws Exception {
         doCreateEmptyTable(tableName, ORC, columns, partitionColumnNames);
 
         HiveMetastoreClosure metastoreClient = new HiveMetastoreClosure(getMetastoreClient());
@@ -767,49 +755,40 @@ public class TestHiveGlueMetastore
     }
 
     private class CloseableSchamaTableName
-            implements AutoCloseable
-    {
+            implements AutoCloseable {
         private final SchemaTableName schemaTableName;
 
-        private CloseableSchamaTableName(SchemaTableName schemaTableName)
-        {
+        private CloseableSchamaTableName(SchemaTableName schemaTableName) {
             this.schemaTableName = schemaTableName;
         }
 
-        public SchemaTableName getSchemaTableName()
-        {
+        public SchemaTableName getSchemaTableName() {
             return schemaTableName;
         }
 
         @Override
-        public void close()
-        {
+        public void close() {
             dropTable(schemaTableName);
         }
     }
 
     // container class for readability. Each value is one for a partitionKey, in order they appear in the schema
-    private static class PartitionValues
-    {
+    private static class PartitionValues {
         private final List<String> values;
 
-        private static PartitionValues make(String... values)
-        {
+        private static PartitionValues make(String... values) {
             return new PartitionValues(Arrays.asList(values));
         }
 
-        private static PartitionValues make(List<String> values)
-        {
+        private static PartitionValues make(List<String> values) {
             return new PartitionValues(values);
         }
 
-        private PartitionValues(List<String> values)
-        {
+        private PartitionValues(List<String> values) {
             this.values = values;
         }
 
-        public List<String> getValues()
-        {
+        public List<String> getValues() {
             return values;
         }
     }

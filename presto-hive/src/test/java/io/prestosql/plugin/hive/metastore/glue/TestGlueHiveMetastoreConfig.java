@@ -18,15 +18,11 @@ import org.testng.annotations.Test;
 
 import java.util.Map;
 
-import static io.airlift.configuration.testing.ConfigAssertions.assertFullMapping;
-import static io.airlift.configuration.testing.ConfigAssertions.assertRecordedDefaults;
-import static io.airlift.configuration.testing.ConfigAssertions.recordDefaults;
+import static io.airlift.configuration.testing.ConfigAssertions.*;
 
-public class TestGlueHiveMetastoreConfig
-{
+public class TestGlueHiveMetastoreConfig {
     @Test
-    public void testDefaults()
-    {
+    public void testDefaults() {
         assertRecordedDefaults(recordDefaults(GlueHiveMetastoreConfig.class)
                 .setGlueRegion(null)
                 .setGlueEndpointUrl(null)
@@ -42,12 +38,14 @@ public class TestGlueHiveMetastoreConfig
                 .setCatalogId(null)
                 .setPartitionSegments(5)
                 .setGetPartitionThreads(20)
-                .setAssumeCanonicalPartitionKeys(false));
+                .setAssumeCanonicalPartitionKeys(false)
+                .setEnableColumnStatistics(false)
+                .setReadStatisticsThreads(1)
+                .setWriteStatisticsThreads(1));
     }
 
     @Test
-    public void testExplicitPropertyMapping()
-    {
+    public void testExplicitPropertyMapping() {
         Map<String, String> properties = new ImmutableMap.Builder<String, String>()
                 .put("hive.metastore.glue.region", "us-east-1")
                 .put("hive.metastore.glue.endpoint-url", "http://foo.bar")
@@ -64,6 +62,9 @@ public class TestGlueHiveMetastoreConfig
                 .put("hive.metastore.glue.partitions-segments", "10")
                 .put("hive.metastore.glue.get-partition-threads", "42")
                 .put("hive.metastore.glue.assume-canonical-partition-keys", "true")
+                .put("hive.metastore.glue.enable-column-stat", "true")
+                .put("hive.metastore.glue.read-statistics-threads", "42")
+                .put("hive.metastore.glue.write-statistics-threads", "43")
                 .build();
 
         GlueHiveMetastoreConfig expected = new GlueHiveMetastoreConfig()
@@ -81,7 +82,10 @@ public class TestGlueHiveMetastoreConfig
                 .setCatalogId("0123456789")
                 .setPartitionSegments(10)
                 .setGetPartitionThreads(42)
-                .setAssumeCanonicalPartitionKeys(true);
+                .setAssumeCanonicalPartitionKeys(true)
+                .setEnableColumnStatistics(true)
+                .setReadStatisticsThreads(42)
+                .setWriteStatisticsThreads(43);
 
         assertFullMapping(properties, expected);
     }

@@ -13,8 +13,6 @@
  */
 package io.prestosql.plugin.hive.metastore.glue;
 
-import com.amazonaws.services.glue.model.PartitionInput;
-import com.amazonaws.services.glue.model.TableInput;
 import io.prestosql.plugin.hive.metastore.HiveColumnStatistics;
 import io.prestosql.plugin.hive.metastore.Partition;
 import io.prestosql.plugin.hive.metastore.Table;
@@ -24,15 +22,14 @@ import io.prestosql.spi.type.Type;
 import java.util.Map;
 import java.util.Set;
 
-public interface GlueColumnStatisticsProvider
-{
+public interface GlueColumnStatisticsProvider {
     Set<ColumnStatisticType> getSupportedColumnStatistics(Type type);
 
     Map<String, HiveColumnStatistics> getTableColumnStatistics(Table table);
 
     Map<String, HiveColumnStatistics> getPartitionColumnStatistics(Partition partition);
 
-    void updateTableColumnStatistics(TableInput table, Map<String, HiveColumnStatistics> columnStatistics);
+    void updateTableColumnStatistics(Table table, Map<String, HiveColumnStatistics> columnStatistics);
 
-    void updatePartitionStatistics(PartitionInput partition, Map<String, HiveColumnStatistics> columnStatistics);
+    void updatePartitionStatistics(Partition partition, Map<String, HiveColumnStatistics> columnStatistics, boolean forPartitionCreation);
 }
