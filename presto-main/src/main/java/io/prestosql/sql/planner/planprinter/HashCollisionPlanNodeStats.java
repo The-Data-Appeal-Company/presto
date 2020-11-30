@@ -19,7 +19,6 @@ import io.prestosql.sql.planner.plan.PlanNodeId;
 
 import java.util.Map;
 
-import static com.google.common.base.Preconditions.checkArgument;
 import static java.lang.Math.max;
 import static java.lang.Math.sqrt;
 import static java.util.Objects.requireNonNull;
@@ -50,7 +49,7 @@ public class HashCollisionPlanNodeStats
         return operatorHashCollisionsStats.entrySet().stream()
                 .collect(toMap(
                         Map.Entry::getKey,
-                        entry -> entry.getValue().getWeightedHashCollisions() / operatorInputStats.get(entry.getKey()).getInputPositions()));
+                        entry -> entry.getValue().getWeightedHashCollisions() / entry.getValue().getInputPositions()));
     }
 
     public Map<String, Double> getOperatorHashCollisionsStdDevs()
@@ -61,7 +60,7 @@ public class HashCollisionPlanNodeStats
                         entry -> computedWeightedStdDev(
                                 entry.getValue().getWeightedSumSquaredHashCollisions(),
                                 entry.getValue().getWeightedHashCollisions(),
-                                operatorInputStats.get(entry.getKey()).getInputPositions())));
+                                entry.getValue().getInputPositions())));
     }
 
     private static double computedWeightedStdDev(double sumSquared, double sum, double totalWeight)
@@ -77,13 +76,13 @@ public class HashCollisionPlanNodeStats
         return operatorHashCollisionsStats.entrySet().stream()
                 .collect(toMap(
                         Map.Entry::getKey,
-                        entry -> entry.getValue().getWeightedExpectedHashCollisions() / operatorInputStats.get(entry.getKey()).getInputPositions()));
+                        entry -> entry.getValue().getWeightedExpectedHashCollisions() / entry.getValue().getInputPositions()));
     }
 
     @Override
     public PlanNodeStats mergeWith(PlanNodeStats other)
     {
-        checkArgument(other instanceof HashCollisionPlanNodeStats, "other is not an instanceof HashCollisionPlanNodeStats");
+        checkMergeable(other);
         PlanNodeStats merged = super.mergeWith(other);
 
         return new HashCollisionPlanNodeStats(

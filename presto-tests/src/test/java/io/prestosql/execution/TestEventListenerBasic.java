@@ -99,7 +99,7 @@ public class TestEventListenerBasic
         queryRunner.getCoordinator().getResourceGroupManager().get()
                 .setConfigurationManager("file", ImmutableMap.of("resource-groups.config-file", getResourceFilePath("resource_groups_config_simple.json")));
 
-        queries = new EventsAwaitingQueries(generatedEvents, queryRunner);
+        queries = new EventsAwaitingQueries(generatedEvents, queryRunner, Duration.ofSeconds(1));
 
         return queryRunner;
     }
@@ -129,6 +129,13 @@ public class TestEventListenerBasic
             throws Exception
     {
         assertFailedQuery("EXPLAIN (TYPE IO) SELECT sum(bogus) FROM lineitem", "line 1:30: Column 'bogus' cannot be resolved");
+    }
+
+    @Test
+    public void testParseError()
+            throws Exception
+    {
+        assertFailedQuery("You shall not parse!", "line 1:1: mismatched input 'You'. Expecting: 'ALTER', 'ANALYZE', 'CALL', 'COMMENT', 'COMMIT', 'CREATE', 'DEALLOCATE', 'DELETE', 'DESC', 'DESCRIBE', 'DROP', 'EXECUTE', 'EXPLAIN', 'GRANT', 'INSERT', 'PREPARE', 'REFRESH', 'RESET', 'REVOKE', 'ROLLBACK', 'SET', 'SHOW', 'START', 'USE', <query>");
     }
 
     @Test

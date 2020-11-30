@@ -21,7 +21,6 @@ import io.prestosql.plugin.jdbc.ColumnMapping;
 import io.prestosql.plugin.jdbc.ConnectionFactory;
 import io.prestosql.plugin.jdbc.JdbcColumnHandle;
 import io.prestosql.plugin.jdbc.JdbcExpression;
-import io.prestosql.plugin.jdbc.JdbcIdentity;
 import io.prestosql.plugin.jdbc.JdbcTableHandle;
 import io.prestosql.plugin.jdbc.JdbcTypeHandle;
 import io.prestosql.plugin.jdbc.PredicatePushdownController;
@@ -68,14 +67,14 @@ import static com.mysql.jdbc.SQLError.SQL_STATE_ER_TABLE_EXISTS_ERROR;
 import static com.mysql.jdbc.SQLError.SQL_STATE_SYNTAX_ERROR;
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.prestosql.plugin.base.util.JsonTypeUtil.jsonParse;
-import static io.prestosql.plugin.jdbc.ColumnMapping.DISABLE_PUSHDOWN;
-import static io.prestosql.plugin.jdbc.ColumnMapping.FULL_PUSHDOWN;
-import static io.prestosql.plugin.jdbc.ColumnMapping.PUSHDOWN_AND_KEEP;
 import static io.prestosql.plugin.jdbc.DecimalConfig.DecimalMapping.ALLOW_OVERFLOW;
 import static io.prestosql.plugin.jdbc.DecimalSessionSessionProperties.getDecimalDefaultScale;
 import static io.prestosql.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRounding;
 import static io.prestosql.plugin.jdbc.DecimalSessionSessionProperties.getDecimalRoundingMode;
 import static io.prestosql.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
+import static io.prestosql.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
+import static io.prestosql.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
+import static io.prestosql.plugin.jdbc.PredicatePushdownController.PUSHDOWN_AND_KEEP;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.bigintColumnMapping;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.decimalColumnMapping;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.integerColumnMapping;
@@ -313,9 +312,9 @@ public class MySqlClient
     }
 
     @Override
-    public void renameColumn(JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
+    public void renameColumn(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
     {
-        try (Connection connection = connectionFactory.openConnection(identity)) {
+        try (Connection connection = connectionFactory.openConnection(session)) {
             DatabaseMetaData metadata = connection.getMetaData();
             if (metadata.storesUpperCaseIdentifiers()) {
                 newColumnName = newColumnName.toUpperCase(ENGLISH);
@@ -351,12 +350,12 @@ public class MySqlClient
     }
 
     @Override
-    public void renameTable(JdbcIdentity identity, JdbcTableHandle handle, SchemaTableName newTableName)
+    public void renameTable(ConnectorSession session, JdbcTableHandle handle, SchemaTableName newTableName)
     {
         // MySQL doesn't support specifying the catalog name in a rename. By setting the
         // catalogName parameter to null, it will be omitted in the ALTER TABLE statement.
         verify(handle.getSchemaName() == null);
-        renameTable(identity, null, handle.getCatalogName(), handle.getTableName(), newTableName);
+        renameTable(session, null, handle.getCatalogName(), handle.getTableName(), newTableName);
     }
 
     @Override

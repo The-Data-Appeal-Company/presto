@@ -13,10 +13,12 @@
  */
 package io.prestosql.jdbc;
 
+import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import org.testng.annotations.Test;
 
 import java.math.BigDecimal;
+import java.sql.Array;
 import java.sql.Connection;
 import java.sql.Date;
 import java.sql.ResultSet;
@@ -29,11 +31,16 @@ import java.sql.Types;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 
 import static com.google.common.base.Verify.verify;
 import static java.lang.String.format;
+import static java.util.Arrays.asList;
+import static java.util.Collections.unmodifiableList;
+import static java.util.Collections.unmodifiableMap;
 import static java.util.concurrent.TimeUnit.DAYS;
 import static java.util.concurrent.TimeUnit.HOURS;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -540,7 +547,47 @@ public abstract class BaseTestJdbcResultSet
             throws Exception
     {
         try (ConnectedStatement connectedStatement = newStatement()) {
-            checkRepresentation(connectedStatement.getStatement(), "ARRAY[1, 2]", Types.ARRAY, (rs, column) -> assertEquals(rs.getArray(column).getArray(), new int[] {1, 2}));
+            checkRepresentation(connectedStatement.getStatement(), "ARRAY[1, 2]", Types.ARRAY, (rs, column) -> {
+                assertEquals(rs.getArray(column).getArray(), new int[] {1, 2});
+                assertEquals(((Array) rs.getObject(column)).getArray(), new int[] {1, 2}); // TODO (https://github.com/prestosql/presto/issues/6049) subject to change
+                assertEquals(rs.getObject(column, List.class), ImmutableList.of(1, 2));
+            });
+
+            // array of bigint, and with NULL
+            checkRepresentation(connectedStatement.getStatement(), "ARRAY[NULL, BIGINT '1', 2]", Types.ARRAY, (rs, column) -> {
+                assertEquals(rs.getArray(column).getArray(), new Long[] {null, 1L, 2L});
+                assertEquals(((Array) rs.getObject(column)).getArray(), new Long[] {null, 1L, 2L}); // TODO (https://github.com/prestosql/presto/issues/6049) subject to change
+                assertEquals(rs.getObject(column, List.class), asList(null, 1L, 2L));
+            });
+
+            // array or array
+            checkRepresentation(connectedStatement.getStatement(), "ARRAY[NULL, ARRAY[NULL, BIGINT '1', 2]]", Types.ARRAY, (rs, column) -> {
+                assertEquals(rs.getArray(column).getArray(), new Object[] {null, asList(null, 1L, 2L)});
+                assertEquals(((Array) rs.getObject(column)).getArray(), new Object[] {null, asList(null, 1L, 2L)}); // TODO (https://github.com/prestosql/presto/issues/6049) subject to change
+                assertEquals(rs.getObject(column, List.class), asList(null, asList(null, 1L, 2L)));
+            });
+
+            // array of map
+            checkRepresentation(connectedStatement.getStatement(), "ARRAY[map(ARRAY['k1', 'k2'], ARRAY[42, NULL])]", Types.ARRAY, (rs, column) -> {
+                Map<String, Integer> element = new HashMap<>();
+                element.put("k1", 42);
+                element.put("k2", null);
+
+                assertEquals(rs.getArray(column).getArray(), new Object[] {element});
+                assertEquals(((Array) rs.getObject(column)).getArray(), new Object[] {element});
+                assertEquals(rs.getObject(column, List.class), ImmutableList.of(element));
+            });
+
+            // array of row
+            checkRepresentation(connectedStatement.getStatement(), "ARRAY[CAST(ROW(42, 'Presto') AS row(a_bigint bigint, a_varchar varchar(17)))]", Types.ARRAY, (rs, column) -> {
+                Row element = Row.builder()
+                        .addField("a_bigint", 42L)
+                        .addField("a_varchar", "Presto")
+                        .build();
+                assertEquals(rs.getArray(column).getArray(), new Object[] {element});
+                assertEquals(((Array) rs.getObject(column)).getArray(), new Object[] {element});
+                assertEquals(rs.getObject(column, List.class), ImmutableList.of(element));
+            });
         }
     }
 
@@ -562,6 +609,15 @@ public abstract class BaseTestJdbcResultSet
                 assertEquals(rs.getObject(column), expected);
                 assertEquals(rs.getObject(column, Map.class), expected);
             });
+
+            // map or row
+            checkRepresentation(connectedStatement.getStatement(), "map(ARRAY['k1', 'k2'], ARRAY[CAST(ROW(42) AS row(a integer)), NULL])", Types.JAVA_OBJECT, (rs, column) -> {
+                Map<String, Row> expected = new HashMap<>();
+                expected.put("k1", Row.builder().addField("a", 42).build());
+                expected.put("k2", null);
+                assertEquals(rs.getObject(column), expected);
+                assertEquals(rs.getObject(column, Map.class), expected);
+            });
         }
     }
 
@@ -571,29 +627,93 @@ public abstract class BaseTestJdbcResultSet
     {
         try (ConnectedStatement connectedStatement = newStatement()) {
             // named row
-            checkRepresentation(connectedStatement.getStatement(), "CAST(ROW(42, 'Presto') AS ROW(a_bigint bigint, a_varchar varchar(17)))", Types.JAVA_OBJECT, (rs, column) -> {
-                assertEquals(rs.getObject(column), ImmutableMap.of("a_bigint", 42L, "a_varchar", "Presto"));
+            checkRepresentation(connectedStatement.getStatement(), "CAST(ROW(42, 'Presto') AS row(a_bigint bigint, a_varchar varchar(17)))", Types.JAVA_OBJECT, (rs, column) -> {
+                assertEquals(rs.getObject(column), Row.builder()
+                        .addField("a_bigint", 42L)
+                        .addField("a_varchar", "Presto")
+                        .build());
                 assertEquals(rs.getObject(column, Map.class), ImmutableMap.of("a_bigint", 42L, "a_varchar", "Presto"));
             });
 
             // partially named row
-            checkRepresentation(connectedStatement.getStatement(), "CAST(ROW(42, 'Presto') AS ROW(a_bigint bigint, varchar(17)))", Types.JAVA_OBJECT, (rs, column) -> {
-                assertEquals(rs.getObject(column), ImmutableMap.of("a_bigint", 42L, "field1", "Presto"));
+            checkRepresentation(connectedStatement.getStatement(), "CAST(ROW(42, 'Presto') AS row(a_bigint bigint, varchar(17)))", Types.JAVA_OBJECT, (rs, column) -> {
+                assertEquals(rs.getObject(column), Row.builder()
+                        .addField("a_bigint", 42L)
+                        .addUnnamedField("Presto")
+                        .build());
                 assertEquals(rs.getObject(column, Map.class), ImmutableMap.of("a_bigint", 42L, "field1", "Presto"));
             });
 
             // anonymous row
             checkRepresentation(connectedStatement.getStatement(), "ROW(42, 'Presto')", Types.JAVA_OBJECT, (rs, column) -> {
-                assertEquals(rs.getObject(column), ImmutableMap.of("field0", 42, "field1", "Presto"));
+                assertEquals(rs.getObject(column), Row.builder()
+                        .addUnnamedField(42)
+                        .addUnnamedField("Presto")
+                        .build());
                 assertEquals(rs.getObject(column, Map.class), ImmutableMap.of("field0", 42, "field1", "Presto"));
             });
 
             // name collision
-            checkRepresentation(connectedStatement.getStatement(), "CAST(ROW(42, 'Presto') AS ROW(field1 integer, varchar(17)))", Types.JAVA_OBJECT, (rs, column) -> {
-                // TODO (https://github.com/prestosql/presto/issues/4594) both fields should be visible or exception thrown
-                assertEquals(rs.getObject(column), ImmutableMap.of("field1", "Presto"));
-                assertEquals(rs.getObject(column, Map.class), ImmutableMap.of("field1", "Presto"));
+            checkRepresentation(connectedStatement.getStatement(), "CAST(ROW(42, 'Presto') AS row(field1 integer, varchar(17)))", Types.JAVA_OBJECT, (rs, column) -> {
+                assertEquals(rs.getObject(column), Row.builder()
+                        .addField("field1", 42)
+                        .addUnnamedField("Presto")
+                        .build());
+                assertThatThrownBy(() -> rs.getObject(column, Map.class))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageMatching("Duplicate field name: field1");
             });
+
+            // name collision with NULL value
+            checkRepresentation(connectedStatement.getStatement(), "CAST(ROW(NULL, NULL) AS row(field1 integer, varchar(17)))", Types.JAVA_OBJECT, (rs, column) -> {
+                assertEquals(rs.getObject(column), Row.builder()
+                        .addField("field1", null)
+                        .addUnnamedField(null)
+                        .build());
+                assertThatThrownBy(() -> rs.getObject(column, Map.class))
+                        .isInstanceOf(SQLException.class)
+                        .hasMessageMatching("Duplicate field name: field1");
+            });
+
+            // row of row or row
+            checkRepresentation(connectedStatement.getStatement(), "ROW(ROW(ROW(42)))", Types.JAVA_OBJECT, (rs, column) -> {
+                assertEquals(
+                        rs.getObject(column),
+                        Row.builder()
+                                .addUnnamedField(Row.builder()
+                                        .addUnnamedField(Row.builder().addUnnamedField(42).build())
+                                        .build())
+                                .build());
+            });
+            checkRepresentation(connectedStatement.getStatement(), "CAST(ROW(ROW(ROW(42))) AS row(a row(b row(c integer))))", Types.JAVA_OBJECT, (rs, column) -> {
+                assertEquals(
+                        rs.getObject(column),
+                        Row.builder()
+                                .addField("a", Row.builder()
+                                        .addField("b", Row.builder().addField("c", 42).build())
+                                        .build())
+                                .build());
+            });
+
+            // row of array of map of row
+            checkRepresentation(
+                    connectedStatement.getStatement(),
+                    "CAST(" +
+                            "   ROW(ARRAY[NULL, map(ARRAY['k1', 'k2'], ARRAY[NULL, ROW(42)])]) AS" +
+                            "   row(\"outer\" array(map(varchar, row(leaf integer)))))",
+                    Types.JAVA_OBJECT,
+                    (rs, column) -> {
+                        Map<String, Object> map = new HashMap<>();
+                        map.put("k1", null);
+                        map.put("k2", Row.builder().addField("leaf", 42).build());
+                        map = unmodifiableMap(map);
+                        List<Object> array = new ArrayList<>();
+                        array.add(null);
+                        array.add(map);
+                        array = unmodifiableList(array);
+                        assertEquals(rs.getObject(column), Row.builder().addField("outer", array).build());
+                        assertEquals(rs.getObject(column, Map.class), ImmutableMap.of("outer", array));
+                    });
         }
     }
 

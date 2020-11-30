@@ -616,11 +616,6 @@ public class LocalExecutionPlanner
             return ImmutableList.copyOf(driverFactories);
         }
 
-        public Session getSession()
-        {
-            return taskContext.getSession();
-        }
-
         public StageId getStageId()
         {
             return taskContext.getTaskId().getStageId();
@@ -1098,7 +1093,7 @@ public class LocalExecutionPlanner
                 outputChannels.add(i);
             }
 
-            boolean spillEnabled = isSpillEnabled(context.getSession()) && isSpillOrderBy(context.getSession());
+            boolean spillEnabled = isSpillEnabled(session) && isSpillOrderBy(session);
 
             OperatorFactory operator = new OrderByOperatorFactory(
                     context.getNextOperatorId(),
@@ -1207,8 +1202,8 @@ public class LocalExecutionPlanner
                 return planGlobalAggregation(node, source, context);
             }
 
-            boolean spillEnabled = isSpillEnabled(context.getSession());
-            DataSize unspillMemoryLimit = getAggregationOperatorUnspillMemoryLimit(context.getSession());
+            boolean spillEnabled = isSpillEnabled(session);
+            DataSize unspillMemoryLimit = getAggregationOperatorUnspillMemoryLimit(session);
 
             return planGroupByAggregation(node, source, spillEnabled, unspillMemoryLimit, context);
         }
@@ -1340,7 +1335,7 @@ public class LocalExecutionPlanner
             }
 
             Map<NodeRef<Expression>, Type> expressionTypes = typeAnalyzer.getTypes(
-                    context.getSession(),
+                    session,
                     context.getTypes(),
                     concat(staticFilters.map(ImmutableList::of).orElse(ImmutableList.of()), assignments.getExpressions()));
 
@@ -1459,10 +1454,10 @@ public class LocalExecutionPlanner
                 // evaluate values for non-empty rows
                 if (node.getRows().isPresent()) {
                     Expression row = node.getRows().get().get(i);
-                    Map<NodeRef<Expression>, Type> types = typeAnalyzer.getTypes(context.getSession(), TypeProvider.empty(), row);
+                    Map<NodeRef<Expression>, Type> types = typeAnalyzer.getTypes(session, TypeProvider.empty(), row);
                     checkState(types.get(NodeRef.of(row)) instanceof RowType, "unexpected type of Values row: %s", types);
                     // evaluate the literal value
-                    Object result = ExpressionInterpreter.expressionInterpreter(row, metadata, context.getSession(), types).evaluate();
+                    Object result = ExpressionInterpreter.expressionInterpreter(row, metadata, session, types).evaluate();
                     for (int j = 0; j < outputTypes.size(); j++) {
                         // divide row into fields
                         writeNativeValue(outputTypes.get(j), pageBuilder.getBlockBuilder(j), readNativeValue(outputTypes.get(j), (SingleRowBlock) result, j));
@@ -1924,8 +1919,9 @@ public class LocalExecutionPlanner
 
             ImmutableList.Builder<OperatorFactory> factoriesBuilder = ImmutableList.builder();
             factoriesBuilder.addAll(buildSource.getOperatorFactories());
+            int operatorId = buildContext.getNextOperatorId();
             createDynamicFilter(buildSource, node, context, partitionCount, localDynamicFilters)
-                    .ifPresent(filter -> factoriesBuilder.add(createDynamicFilterSourceOperatorFactory(filter, node, buildSource, buildContext)));
+                    .ifPresent(filter -> factoriesBuilder.add(createDynamicFilterSourceOperatorFactory(operatorId, filter, node, buildSource)));
             factoriesBuilder.add(nestedLoopBuildOperatorFactory);
 
             context.addDriverFactory(
@@ -2042,7 +2038,7 @@ public class LocalExecutionPlanner
                             probeLayout,
                             buildLayout,
                             context.getTypes(),
-                            context.getSession()));
+                            session));
 
             Optional<Integer> partitionChannel = node.getRightPartitionSymbol().map(buildChannelGetter::apply);
 
@@ -2137,7 +2133,7 @@ public class LocalExecutionPlanner
                             probeSource.getLayout(),
                             buildSource.getLayout(),
                             context.getTypes(),
-                            context.getSession()));
+                            session));
 
             Optional<SortExpressionContext> sortExpressionContext = node.getFilter()
                     .flatMap(filter -> extractSortExpression(metadata, ImmutableSet.copyOf(node.getRight().getOutputSymbols()), filter));
@@ -2155,7 +2151,7 @@ public class LocalExecutionPlanner
                                     probeSource.getLayout(),
                                     buildSource.getLayout(),
                                     context.getTypes(),
-                                    context.getSession()))
+                                    session))
                             .collect(toImmutableList()))
                     .orElse(ImmutableList.of());
 
@@ -2180,8 +2176,9 @@ public class LocalExecutionPlanner
             ImmutableList.Builder<OperatorFactory> factoriesBuilder = new ImmutableList.Builder<>();
             factoriesBuilder.addAll(buildSource.getOperatorFactories());
 
+            int operatorId = buildContext.getNextOperatorId();
             createDynamicFilter(buildSource, node, context, partitionCount, localDynamicFilters).ifPresent(
-                    filter -> factoriesBuilder.add(createDynamicFilterSourceOperatorFactory(filter, node, buildSource, buildContext)));
+                    filter -> factoriesBuilder.add(createDynamicFilterSourceOperatorFactory(operatorId, filter, node, buildSource)));
 
             HashBuilderOperatorFactory hashBuilderOperatorFactory = new HashBuilderOperatorFactory(
                     buildContext.getNextOperatorId(),
@@ -2211,10 +2208,10 @@ public class LocalExecutionPlanner
         }
 
         private DynamicFilterSourceOperatorFactory createDynamicFilterSourceOperatorFactory(
+                int operatorId,
                 LocalDynamicFilterConsumer dynamicFilter,
                 JoinNode node,
-                PhysicalOperation buildSource,
-                LocalExecutionPlanContext context)
+                PhysicalOperation buildSource)
         {
             List<DynamicFilterSourceOperator.Channel> filterBuildChannels = dynamicFilter.getBuildChannels().entrySet().stream()
                     .map(entry -> {
@@ -2226,13 +2223,13 @@ public class LocalExecutionPlanner
                     .collect(Collectors.toList());
             boolean isReplicatedJoin = isBuildSideReplicated(node);
             return new DynamicFilterSourceOperatorFactory(
-                    context.getNextOperatorId(),
+                    operatorId,
                     node.getId(),
                     dynamicFilter.getTupleDomainConsumer(),
                     filterBuildChannels,
-                    getDynamicFilteringMaxDistinctValuesPerDriver(context.getSession(), isReplicatedJoin),
-                    getDynamicFilteringMaxSizePerDriver(context.getSession(), isReplicatedJoin),
-                    getDynamicFilteringRangeRowLimitPerDriver(context.getSession(), isReplicatedJoin),
+                    getDynamicFilteringMaxDistinctValuesPerDriver(session, isReplicatedJoin),
+                    getDynamicFilteringMaxSizePerDriver(session, isReplicatedJoin),
+                    getDynamicFilteringRangeRowLimitPerDriver(session, isReplicatedJoin),
                     blockTypeOperators);
         }
 
@@ -2354,6 +2351,7 @@ public class LocalExecutionPlanner
             ImmutableList.Builder<OperatorFactory> buildOperatorFactories = new ImmutableList.Builder<>();
             buildOperatorFactories.addAll(buildSource.getOperatorFactories());
 
+            int operatorId = buildContext.getNextOperatorId();
             if (isLocalDynamicFilter || isCoordinatorDynamicFilter) {
                 // Add a DynamicFilterSourceOperatorFactory to build operator factories
                 DynamicFilterId filterId = node.getDynamicFilterId().get();
@@ -2371,13 +2369,13 @@ public class LocalExecutionPlanner
                 }
                 boolean isReplicatedJoin = isBuildSideReplicated(node);
                 buildOperatorFactories.add(new DynamicFilterSourceOperatorFactory(
-                        buildContext.getNextOperatorId(),
+                        operatorId,
                         node.getId(),
                         filterConsumer.getTupleDomainConsumer(),
                         ImmutableList.of(new DynamicFilterSourceOperator.Channel(filterId, buildSource.getTypes().get(buildChannel), buildChannel)),
-                        getDynamicFilteringMaxDistinctValuesPerDriver(context.getSession(), isReplicatedJoin),
-                        getDynamicFilteringMaxSizePerDriver(context.getSession(), isReplicatedJoin),
-                        getDynamicFilteringRangeRowLimitPerDriver(context.getSession(), isReplicatedJoin),
+                        getDynamicFilteringMaxDistinctValuesPerDriver(session, isReplicatedJoin),
+                        getDynamicFilteringMaxSizePerDriver(session, isReplicatedJoin),
+                        getDynamicFilteringRangeRowLimitPerDriver(session, isReplicatedJoin),
                         blockTypeOperators));
             }
 
@@ -3118,8 +3116,13 @@ public class LocalExecutionPlanner
             }
             else if (target instanceof TableWriterNode.RefreshMaterializedViewTarget) {
                 TableWriterNode.RefreshMaterializedViewTarget refreshTarget = (TableWriterNode.RefreshMaterializedViewTarget) target;
-                return metadata.finishRefreshMaterializedView(session, refreshTarget.getTableHandle(), refreshTarget.getInsertHandle(),
-                    fragments, statistics, refreshTarget.getSourceTableHandles());
+                return metadata.finishRefreshMaterializedView(
+                        session,
+                        refreshTarget.getTableHandle(),
+                        refreshTarget.getInsertHandle(),
+                        fragments,
+                        statistics,
+                        refreshTarget.getSourceTableHandles());
             }
             else if (target instanceof DeleteTarget) {
                 metadata.finishDelete(session, ((DeleteTarget) target).getHandle(), fragments);

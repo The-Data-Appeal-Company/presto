@@ -321,6 +321,24 @@ public abstract class AbstractTestQueryFramework
         assertEquals(actual, expected);
     }
 
+    protected void assertExplainAnalyze(@Language("SQL") String query, @Language("RegExp") String... expectedExplainRegExps)
+    {
+        assertExplainAnalyze(getSession(), query, expectedExplainRegExps);
+    }
+
+    protected void assertExplainAnalyze(Session session, @Language("SQL") String query, @Language("RegExp") String... expectedExplainRegExps)
+    {
+        String value = (String) computeActual(session, query).getOnlyValue();
+
+        // TODO: check that rendered plan is as expected, once stats are collected in a consistent way
+        // assertTrue(value.contains("Cost: "), format("Expected output to contain \"Cost: \", but it is %s", value));
+        assertThat(value).containsPattern("(?s:.*)CPU:.*, Input:.*, Output(?s:.*)");
+
+        for (String expectedExplainRegExp : expectedExplainRegExps) {
+            assertThat(value).containsPattern(expectedExplainRegExp);
+        }
+    }
+
     protected MaterializedResult computeExpected(@Language("SQL") String sql, List<? extends Type> resultTypes)
     {
         return h2QueryRunner.execute(getSession(), sql, resultTypes);

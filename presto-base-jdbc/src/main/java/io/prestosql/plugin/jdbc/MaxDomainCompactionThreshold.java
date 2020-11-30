@@ -11,26 +11,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-package io.prestosql.plugin.prometheus;
+package io.prestosql.plugin.jdbc;
 
-class PairLike<F, S>
+import javax.inject.Qualifier;
+
+import java.lang.annotation.Retention;
+import java.lang.annotation.Target;
+
+import static java.lang.annotation.ElementType.FIELD;
+import static java.lang.annotation.ElementType.METHOD;
+import static java.lang.annotation.ElementType.PARAMETER;
+import static java.lang.annotation.RetentionPolicy.RUNTIME;
+
+@Retention(RUNTIME)
+@Target({FIELD, PARAMETER, METHOD})
+@Qualifier
+public @interface MaxDomainCompactionThreshold
 {
-    private final F first;
-    private final S second;
-
-    public PairLike(F first, S second)
-    {
-        this.first = first;
-        this.second = second;
-    }
-
-    public F getFirst()
-    {
-        return first;
-    }
-
-    public S getSecond()
-    {
-        return second;
-    }
 }

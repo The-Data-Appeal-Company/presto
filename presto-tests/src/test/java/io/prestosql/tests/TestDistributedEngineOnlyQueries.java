@@ -19,6 +19,9 @@ import io.prestosql.tests.tpch.TpchQueryRunnerBuilder;
 import org.intellij.lang.annotations.Language;
 import org.testng.annotations.Test;
 
+import static io.prestosql.SystemSessionProperties.ENABLE_DYNAMIC_FILTERING;
+import static io.prestosql.sql.analyzer.FeaturesConfig.JoinDistributionType.BROADCAST;
+
 public class TestDistributedEngineOnlyQueries
         extends AbstractTestEngineOnlyQueries
 {
@@ -100,5 +103,30 @@ public class TestDistributedEngineOnlyQueries
         assertQuery(
                 "SELECT cast(row(1) AS row(\"cross\" bigint)).\"cross\"",
                 "VALUES 1");
+    }
+
+    // explain analyze can only run on coordinator
+    @Test
+    public void testExplainAnalyze()
+    {
+        assertExplainAnalyze(
+                noJoinReordering(BROADCAST),
+                "EXPLAIN ANALYZE SELECT * FROM (SELECT nationkey, regionkey FROM nation GROUP BY nationkey, regionkey) a, nation b WHERE a.regionkey = b.regionkey");
+        assertExplainAnalyze(
+                "EXPLAIN ANALYZE SELECT * FROM nation a, nation b WHERE a.nationkey = b.nationkey",
+                "Left \\(probe\\) Input avg\\.: .* rows, Input std\\.dev\\.: .*",
+                "Right \\(build\\) Input avg\\.: .* rows, Input std\\.dev\\.: .*",
+                "Collisions avg\\.: .* \\(.* est\\.\\), Collisions std\\.dev\\.: .*");
+        assertExplainAnalyze(
+                Session.builder(getSession())
+                        .setSystemProperty(ENABLE_DYNAMIC_FILTERING, "false")
+                        .build(),
+                "EXPLAIN ANALYZE SELECT * FROM nation a, nation b WHERE a.nationkey = b.nationkey",
+                "Left \\(probe\\) Input avg\\.: .* rows, Input std\\.dev\\.: .*",
+                "Right \\(build\\) Input avg\\.: .* rows, Input std\\.dev\\.: .*",
+                "Collisions avg\\.: .* \\(.* est\\.\\), Collisions std\\.dev\\.: .*");
+        assertExplainAnalyze(
+                "EXPLAIN ANALYZE SELECT nationkey FROM nation GROUP BY nationkey",
+                "Collisions avg\\.: .* \\(.* est\\.\\), Collisions std\\.dev\\.: .*");
     }
 }

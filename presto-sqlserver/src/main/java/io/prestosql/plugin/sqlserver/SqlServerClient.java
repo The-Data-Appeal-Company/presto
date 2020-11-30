@@ -22,10 +22,8 @@ import io.prestosql.plugin.jdbc.ColumnMapping;
 import io.prestosql.plugin.jdbc.ConnectionFactory;
 import io.prestosql.plugin.jdbc.JdbcColumnHandle;
 import io.prestosql.plugin.jdbc.JdbcExpression;
-import io.prestosql.plugin.jdbc.JdbcIdentity;
 import io.prestosql.plugin.jdbc.JdbcTableHandle;
 import io.prestosql.plugin.jdbc.JdbcTypeHandle;
-import io.prestosql.plugin.jdbc.PredicatePushdownController.DomainPushdownResult;
 import io.prestosql.plugin.jdbc.SliceWriteFunction;
 import io.prestosql.plugin.jdbc.WriteMapping;
 import io.prestosql.plugin.jdbc.expression.AggregateFunctionRewriter;
@@ -41,7 +39,6 @@ import io.prestosql.spi.connector.AggregateFunction;
 import io.prestosql.spi.connector.ColumnHandle;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.SchemaTableName;
-import io.prestosql.spi.predicate.Domain;
 import io.prestosql.spi.type.CharType;
 import io.prestosql.spi.type.DecimalType;
 import io.prestosql.spi.type.Type;
@@ -61,8 +58,9 @@ import java.util.function.BiFunction;
 
 import static com.google.common.base.Preconditions.checkArgument;
 import static io.airlift.slice.Slices.wrappedBuffer;
-import static io.prestosql.plugin.jdbc.ColumnMapping.DISABLE_PUSHDOWN;
 import static io.prestosql.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
+import static io.prestosql.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
+import static io.prestosql.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.booleanWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.charWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.varcharWriteFunction;
@@ -75,10 +73,10 @@ import static java.util.stream.Collectors.joining;
 public class SqlServerClient
         extends BaseJdbcClient
 {
-    private static final Joiner DOT_JOINER = Joiner.on(".");
-
     // SqlServer supports 2100 parameters in prepared statement, let's create a space for about 4 big IN predicates
-    private static final int SQL_SERVER_MAX_LIST_EXPRESSIONS = 500;
+    public static final int SQL_SERVER_MAX_LIST_EXPRESSIONS = 500;
+
+    private static final Joiner DOT_JOINER = Joiner.on(".");
 
     private final AggregateFunctionRewriter aggregateFunctionRewriter;
 
@@ -106,7 +104,7 @@ public class SqlServerClient
     }
 
     @Override
-    protected void renameTable(JdbcIdentity identity, String catalogName, String schemaName, String tableName, SchemaTableName newTable)
+    protected void renameTable(ConnectorSession session, String catalogName, String schemaName, String tableName, SchemaTableName newTable)
     {
         if (!schemaName.equals(newTable.getSchemaName())) {
             throw new PrestoException(NOT_SUPPORTED, "Table rename across schemas is not supported");
@@ -116,17 +114,17 @@ public class SqlServerClient
                 "sp_rename %s, %s",
                 singleQuote(catalogName, schemaName, tableName),
                 singleQuote(newTable.getTableName()));
-        execute(identity, sql);
+        execute(session, sql);
     }
 
     @Override
-    public void renameColumn(JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
+    public void renameColumn(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle jdbcColumn, String newColumnName)
     {
         String sql = format(
                 "sp_rename %s, %s, 'COLUMN'",
                 singleQuote(handle.getCatalogName(), handle.getSchemaName(), handle.getTableName(), jdbcColumn.getColumnName()),
                 singleQuote(newColumnName));
-        execute(identity, sql);
+        execute(session, sql);
     }
 
     @Override
@@ -163,7 +161,7 @@ public class SqlServerClient
                         columnMapping.getType(),
                         columnMapping.getReadFunction(),
                         columnMapping.getWriteFunction(),
-                        this::fullPushDownIfPossilble));
+                        FULL_PUSHDOWN));
     }
 
     @Override
@@ -254,7 +252,8 @@ public class SqlServerClient
 
     private static SliceWriteFunction varbinaryWriteFunction()
     {
-        return new SliceWriteFunction() {
+        return new SliceWriteFunction()
+        {
             @Override
             public void set(PreparedStatement statement, int index, Slice value)
                     throws SQLException
@@ -269,13 +268,5 @@ public class SqlServerClient
                 statement.setBytes(index, null);
             }
         };
-    }
-
-    private DomainPushdownResult fullPushDownIfPossilble(Domain domain)
-    {
-        if (domain.getValues().getRanges().getRangeCount() > SQL_SERVER_MAX_LIST_EXPRESSIONS) {
-            return new DomainPushdownResult(domain.simplify(), domain);
-        }
-        return new DomainPushdownResult(domain, Domain.all(domain.getType()));
     }
 }

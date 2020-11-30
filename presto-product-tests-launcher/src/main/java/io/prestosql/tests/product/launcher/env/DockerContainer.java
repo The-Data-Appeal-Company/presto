@@ -21,6 +21,7 @@ import com.google.common.base.Stopwatch;
 import com.google.common.collect.ImmutableList;
 import com.google.common.io.RecursiveDeleteOption;
 import io.airlift.log.Logger;
+import io.airlift.units.Duration;
 import net.jodah.failsafe.Failsafe;
 import net.jodah.failsafe.FailsafeExecutor;
 import net.jodah.failsafe.Timeout;
@@ -32,6 +33,8 @@ import org.testcontainers.containers.wait.strategy.WaitAllStrategy;
 import org.testcontainers.containers.wait.strategy.WaitStrategy;
 import org.testcontainers.images.builder.Transferable;
 
+import javax.annotation.concurrent.GuardedBy;
+
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.file.Files;
@@ -42,6 +45,7 @@ import java.util.Arrays;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Optional;
+import java.util.OptionalLong;
 import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutionException;
@@ -72,7 +76,14 @@ public class DockerContainer
             .with(asyncTimeout)
             .with(Executors.newCachedThreadPool(daemonThreadsNamed("docker-container-%d")));
 
-    private String logicalName;
+    private final String logicalName;
+
+    // start is retried, we are recording the last attempt only
+    @GuardedBy("this")
+    private OptionalLong lastStartUpCommenceTimeNanos = OptionalLong.empty();
+    @GuardedBy("this")
+    private OptionalLong lastStartFinishTimeNanos = OptionalLong.empty();
+
     private List<String> logPaths = new ArrayList<>();
     private Optional<EnvironmentListener> listener = Optional.empty();
 
@@ -149,9 +160,20 @@ public class DockerContainer
                 .withCreateContainerCmdModifier(command -> command.withHealthcheck(cmd));
     }
 
+    public synchronized Duration getStartupTime()
+    {
+        checkState(lastStartUpCommenceTimeNanos.isPresent(), "Container did not commence starting");
+        checkState(lastStartFinishTimeNanos.isPresent(), "Container not started");
+        return Duration.succinctNanos(lastStartFinishTimeNanos.getAsLong() - lastStartUpCommenceTimeNanos.getAsLong()).convertToMostSuccinctTimeUnit();
+    }
+
     @Override
     protected void containerIsStarting(InspectContainerResponse containerInfo)
     {
+        synchronized (this) {
+            lastStartUpCommenceTimeNanos = OptionalLong.of(System.nanoTime());
+            lastStartFinishTimeNanos = OptionalLong.empty();
+        }
         super.containerIsStarting(containerInfo);
         this.listener.ifPresent(listener -> listener.containerStarting(this, containerInfo));
     }
@@ -159,6 +181,10 @@ public class DockerContainer
     @Override
     protected void containerIsStarted(InspectContainerResponse containerInfo)
     {
+        synchronized (this) {
+            checkState(lastStartUpCommenceTimeNanos.isPresent(), "containerIsStarting has not been called yet");
+            lastStartFinishTimeNanos = OptionalLong.of(System.nanoTime());
+        }
         super.containerIsStarted(containerInfo);
         this.listener.ifPresent(listener -> listener.containerStarted(this, containerInfo));
     }

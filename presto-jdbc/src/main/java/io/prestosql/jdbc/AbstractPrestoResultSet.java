@@ -15,12 +15,15 @@ package io.prestosql.jdbc;
 
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import io.prestosql.client.ClientTypeSignature;
+import io.prestosql.client.ClientTypeSignatureParameter;
 import io.prestosql.client.Column;
 import io.prestosql.client.IntervalDayTime;
 import io.prestosql.client.IntervalYearMonth;
 import io.prestosql.client.QueryError;
 import io.prestosql.client.QueryStatusInfo;
 import io.prestosql.jdbc.ColumnInfo.Nullable;
+import io.prestosql.jdbc.TypeConversions.NoConversionRegisteredException;
 import org.joda.time.DateTimeZone;
 import org.joda.time.LocalDate;
 import org.joda.time.format.DateTimeFormat;
@@ -67,13 +70,17 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static com.google.common.base.Preconditions.checkArgument;
+import static com.google.common.base.Verify.verify;
 import static com.google.common.collect.Iterables.getOnlyElement;
 import static io.prestosql.jdbc.ColumnInfo.setTypeInfo;
 import static java.lang.String.format;
 import static java.math.BigDecimal.ROUND_HALF_UP;
+import static java.util.Arrays.asList;
+import static java.util.Collections.unmodifiableMap;
 import static java.util.Locale.ENGLISH;
 import static java.util.Objects.requireNonNull;
 import static java.util.concurrent.TimeUnit.SECONDS;
+import static java.util.stream.Collectors.toList;
 import static org.joda.time.DateTimeZone.UTC;
 
 abstract class AbstractPrestoResultSet
@@ -117,6 +124,23 @@ abstract class AbstractPrestoResultSet
     // Before 1900, Java Time and Joda Time are not consistent with java.sql.Date and java.util.Calendar
     // Since January 1, 1900 UTC is still December 31, 1899 in other zones, we are adding a 1 year margin.
     private static final long START_OF_MODERN_ERA = new LocalDate(1901, 1, 1).toDateTimeAtStartOfDay(UTC).getMillis();
+
+    private static final TypeConversions TYPE_CONVERSIONS =
+            TypeConversions.builder()
+                    .add(PrestoArray.class, List.class, array -> asList((Object[]) array.getArray()))
+                    .add(Row.class, Map.class, row -> {
+                        Map<String, Object> result = new HashMap<>();
+                        for (RowField field : row.getFields()) {
+                            String name = field.getName()
+                                    .orElseGet(() -> "field" + field.getOrdinal());
+                            if (result.containsKey(name)) {
+                                throw new SQLException("Duplicate field name: " + name);
+                            }
+                            result.put(name, field.getValue());
+                        }
+                        return result;
+                    })
+                    .build();
 
     private final DateTimeZone resultTimeZone;
     protected final Iterator<List<Object>> results;
@@ -535,24 +559,89 @@ abstract class AbstractPrestoResultSet
         ColumnInfo columnInfo = columnInfo(columnIndex);
         switch (columnInfo.getColumnType()) {
             case Types.DATE:
+                // TODO (https://github.com/prestosql/presto/issues/6048) move to convertFromClientRepresentation
                 return getDate(columnIndex);
             case Types.TIME:
+                // TODO (https://github.com/prestosql/presto/issues/6048) move to convertFromClientRepresentation
                 return getTime(columnIndex);
             case Types.TIMESTAMP:
+                // TODO (https://github.com/prestosql/presto/issues/6048) move to convertFromClientRepresentation
                 return getTimestamp(columnIndex);
             case Types.ARRAY:
+                // TODO (https://github.com/prestosql/presto/issues/6048) move to convertFromClientRepresentation
                 return getArray(columnIndex);
             case Types.DECIMAL:
+                // TODO (https://github.com/prestosql/presto/issues/6048) move to convertFromClientRepresentation
                 return getBigDecimal(columnIndex);
             case Types.JAVA_OBJECT:
                 if (columnInfo.getColumnTypeName().equalsIgnoreCase("interval year to month")) {
+                    // TODO (https://github.com/prestosql/presto/issues/6048) move to convertFromClientRepresentation
                     return getIntervalYearMonth(columnIndex);
                 }
                 if (columnInfo.getColumnTypeName().equalsIgnoreCase("interval day to second")) {
+                    // TODO (https://github.com/prestosql/presto/issues/6048) move to convertFromClientRepresentation
                     return getIntervalDayTime(columnIndex);
+                }
+                switch (columnInfo.getColumnTypeSignature().getRawType()) {
+                    case "map":
+                    case "row":
+                        return convertFromClientRepresentation(columnInfo.getColumnTypeSignature(), column(columnIndex));
                 }
         }
         return column(columnIndex);
+    }
+
+    @javax.annotation.Nullable
+    private Object convertFromClientRepresentation(ClientTypeSignature columnType, @javax.annotation.Nullable Object value)
+    {
+        requireNonNull(columnType, "columnType is null");
+
+        if (value == null) {
+            return null;
+        }
+
+        switch (columnType.getRawType()) {
+            case "array": {
+                ClientTypeSignature elementType = getOnlyElement(columnType.getArgumentsAsTypeSignatures());
+                return ((List<?>) value).stream()
+                        .map(element -> convertFromClientRepresentation(elementType, element))
+                        .collect(toList());
+            }
+
+            case "map": {
+                List<ClientTypeSignature> typeSignatures = columnType.getArgumentsAsTypeSignatures();
+                verify(typeSignatures.size() == 2, "Unexpected map parameters: %s", typeSignatures);
+                ClientTypeSignature keyType = typeSignatures.get(0);
+                ClientTypeSignature valueType = typeSignatures.get(1);
+                // Cannot use toMap() on nullable elements
+                Map<Object, Object> converted = new HashMap<>();
+                ((Map<?, ?>) value).forEach((key, element) -> {
+                    converted.put(convertFromClientRepresentation(keyType, key), convertFromClientRepresentation(valueType, element));
+                });
+                return unmodifiableMap(converted);
+            }
+
+            case "row": {
+                io.prestosql.client.Row row = (io.prestosql.client.Row) value;
+                List<io.prestosql.client.RowField> fields = row.getFields();
+                List<ClientTypeSignatureParameter> typeArguments = columnType.getArguments();
+                Row.Builder builder = Row.builder();
+                verify(fields.size() == typeArguments.size(), "Type mismatch: %s, %s", row, columnType);
+                for (int i = 0; i < fields.size(); i++) {
+                    io.prestosql.client.RowField field = fields.get(i);
+                    ClientTypeSignatureParameter clientTypeSignatureParameter = typeArguments.get(i);
+                    verify(clientTypeSignatureParameter.getKind() == ClientTypeSignatureParameter.ParameterKind.NAMED_TYPE, "Not a NAMED_TYPE: %s", clientTypeSignatureParameter);
+                    verify(field.getName().equals(clientTypeSignatureParameter.getNamedTypeSignature().getName()), "Name mismatch: %s, %s", field, clientTypeSignatureParameter);
+                    Object converted = convertFromClientRepresentation(clientTypeSignatureParameter.getNamedTypeSignature().getTypeSignature(), field.getValue());
+                    builder.addField(field.getName(), converted);
+                }
+                return builder.build();
+            }
+        }
+
+        // TODO (https://github.com/prestosql/presto/issues/6048) add conversions for decimal, date, time, timestamp, interval
+
+        return value;
     }
 
     private PrestoIntervalYearMonth getIntervalYearMonth(int columnIndex)
@@ -1156,9 +1245,10 @@ abstract class AbstractPrestoResultSet
         }
 
         ColumnInfo columnInfo = columnInfo(columnIndex);
-        String elementTypeName = getOnlyElement(columnInfo.getColumnTypeSignature().getArguments()).toString();
+        ClientTypeSignature columnTypeSignature = columnInfo.getColumnTypeSignature();
+        String elementTypeName = getOnlyElement(columnTypeSignature.getArguments()).toString();
         int elementType = getOnlyElement(columnInfo.getColumnParameterTypes());
-        return new PrestoArray(elementTypeName, elementType, (List<?>) value);
+        return new PrestoArray(elementTypeName, elementType, (List<?>) convertFromClientRepresentation(columnTypeSignature, value));
     }
 
     @Override
@@ -1657,14 +1747,21 @@ abstract class AbstractPrestoResultSet
             //noinspection unchecked
             return (T) object;
         }
-        throw new SQLException(format("Cannot convert an instance of %s to %s", object.getClass(), type));
+        try {
+            T converted = TYPE_CONVERSIONS.convert(object, type);
+            verify(converted != null, "Conversion cannot return null for non-null input, as this breask wasNull()");
+            return converted;
+        }
+        catch (NoConversionRegisteredException e) {
+            throw new SQLException(format("Cannot convert an instance of %s to %s", object.getClass(), type));
+        }
     }
 
     @Override
     public <T> T getObject(String columnLabel, Class<T> type)
             throws SQLException
     {
-        throw new SQLFeatureNotSupportedException("getObject");
+        return getObject(columnIndex(columnLabel), type);
     }
 
     @SuppressWarnings("unchecked")

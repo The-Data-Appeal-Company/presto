@@ -21,17 +21,14 @@ import io.prestosql.plugin.jdbc.ColumnMapping;
 import io.prestosql.plugin.jdbc.ConnectionFactory;
 import io.prestosql.plugin.jdbc.DoubleWriteFunction;
 import io.prestosql.plugin.jdbc.JdbcColumnHandle;
-import io.prestosql.plugin.jdbc.JdbcIdentity;
 import io.prestosql.plugin.jdbc.JdbcTableHandle;
 import io.prestosql.plugin.jdbc.JdbcTypeHandle;
 import io.prestosql.plugin.jdbc.LongWriteFunction;
-import io.prestosql.plugin.jdbc.PredicatePushdownController;
 import io.prestosql.plugin.jdbc.SliceWriteFunction;
 import io.prestosql.plugin.jdbc.WriteMapping;
 import io.prestosql.spi.PrestoException;
 import io.prestosql.spi.connector.ConnectorSession;
 import io.prestosql.spi.connector.SchemaTableName;
-import io.prestosql.spi.predicate.Domain;
 import io.prestosql.spi.type.CharType;
 import io.prestosql.spi.type.Chars;
 import io.prestosql.spi.type.DecimalType;
@@ -64,8 +61,9 @@ import java.util.TimeZone;
 
 import static io.airlift.slice.Slices.utf8Slice;
 import static io.airlift.slice.Slices.wrappedBuffer;
-import static io.prestosql.plugin.jdbc.ColumnMapping.DISABLE_PUSHDOWN;
 import static io.prestosql.plugin.jdbc.JdbcErrorCode.JDBC_ERROR;
+import static io.prestosql.plugin.jdbc.PredicatePushdownController.DISABLE_PUSHDOWN;
+import static io.prestosql.plugin.jdbc.PredicatePushdownController.FULL_PUSHDOWN;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.bigintWriteFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.charReadFunction;
 import static io.prestosql.plugin.jdbc.StandardColumnMappings.charWriteFunction;
@@ -116,6 +114,8 @@ import static java.util.concurrent.TimeUnit.DAYS;
 public class OracleClient
         extends BaseJdbcClient
 {
+    public static final int ORACLE_MAX_LIST_EXPRESSIONS = 1000;
+
     private static final int MAX_BYTES_PER_CHAR = 4;
 
     private static final int ORACLE_VARCHAR2_MAX_BYTES = 4000;
@@ -125,8 +125,6 @@ public class OracleClient
     private static final int ORACLE_CHAR_MAX_CHARS = ORACLE_CHAR_MAX_BYTES / MAX_BYTES_PER_CHAR;
 
     private static final int PRECISION_OF_UNSPECIFIED_NUMBER = 127;
-
-    private static final int ORACLE_MAX_LIST_EXPRESSIONS = 1000;
 
     private static final Set<String> INTERNAL_SCHEMAS = ImmutableSet.<String>builder()
             .add("ctxsys")
@@ -212,7 +210,7 @@ public class OracleClient
     }
 
     @Override
-    protected void renameTable(JdbcIdentity identity, String catalogName, String schemaName, String tableName, SchemaTableName newTable)
+    protected void renameTable(ConnectorSession session, String catalogName, String schemaName, String tableName, SchemaTableName newTable)
     {
         if (!schemaName.equalsIgnoreCase(newTable.getSchemaName())) {
             throw new PrestoException(NOT_SUPPORTED, "Table rename across schemas is not supported in Oracle");
@@ -224,7 +222,7 @@ public class OracleClient
                 quoted(catalogName, schemaName, tableName),
                 quoted(newTableName));
 
-        try (Connection connection = connectionFactory.openConnection(identity)) {
+        try (Connection connection = connectionFactory.openConnection(session)) {
             execute(connection, sql);
         }
         catch (SQLException e) {
@@ -233,7 +231,7 @@ public class OracleClient
     }
 
     @Override
-    public void createSchema(JdbcIdentity identity, String schemaName)
+    public void createSchema(ConnectorSession session, String schemaName)
     {
         // ORA-02420: missing schema authorization clause
         throw new PrestoException(NOT_SUPPORTED, "This connector does not support creating schemas");
@@ -255,13 +253,13 @@ public class OracleClient
                         SMALLINT,
                         ResultSet::getShort,
                         smallintWriteFunction(),
-                        OracleClient::fullPushdownIfSupported));
+                        FULL_PUSHDOWN));
             case OracleTypes.BINARY_FLOAT:
                 return Optional.of(ColumnMapping.longMapping(
                         REAL,
                         (resultSet, columnIndex) -> floatToRawIntBits(resultSet.getFloat(columnIndex)),
                         oracleRealWriteFunction(),
-                        OracleClient::fullPushdownIfSupported));
+                        FULL_PUSHDOWN));
 
             case OracleTypes.BINARY_DOUBLE:
             case OracleTypes.FLOAT:
@@ -269,7 +267,7 @@ public class OracleClient
                         DOUBLE,
                         ResultSet::getDouble,
                         oracleDoubleWriteFunction(),
-                        OracleClient::fullPushdownIfSupported));
+                        FULL_PUSHDOWN));
             case OracleTypes.NUMBER:
                 int decimalDigits = typeHandle.getRequiredDecimalDigits();
                 // Map negative scale to decimal(p+s, 0).
@@ -298,13 +296,13 @@ public class OracleClient
                             decimalType,
                             shortDecimalReadFunction(decimalType, roundingMode),
                             shortDecimalWriteFunction(decimalType),
-                            OracleClient::fullPushdownIfSupported));
+                            FULL_PUSHDOWN));
                 }
                 return Optional.of(ColumnMapping.sliceMapping(
                         decimalType,
                         longDecimalReadFunction(decimalType, roundingMode),
                         longDecimalWriteFunction(decimalType),
-                        OracleClient::fullPushdownIfSupported));
+                        FULL_PUSHDOWN));
 
             case OracleTypes.CHAR:
             case OracleTypes.NCHAR:
@@ -313,7 +311,7 @@ public class OracleClient
                         charType,
                         charReadFunction(charType),
                         oracleCharWriteFunction(charType),
-                        OracleClient::fullPushdownIfSupported));
+                        FULL_PUSHDOWN));
 
             case OracleTypes.VARCHAR:
             case OracleTypes.NVARCHAR:
@@ -321,7 +319,7 @@ public class OracleClient
                         createVarcharType(columnSize),
                         (varcharResultSet, varcharColumnIndex) -> utf8Slice(varcharResultSet.getString(varcharColumnIndex)),
                         varcharWriteFunction(),
-                        OracleClient::fullPushdownIfSupported));
+                        FULL_PUSHDOWN));
 
             case OracleTypes.CLOB:
             case OracleTypes.NCLOB:
@@ -351,19 +349,6 @@ public class OracleClient
         return Optional.empty();
     }
 
-    private static PredicatePushdownController.DomainPushdownResult fullPushdownIfSupported(Domain domain)
-    {
-        if (domain.getValues().getRanges().getRangeCount() > ORACLE_MAX_LIST_EXPRESSIONS) {
-            // pushdown simplified domain
-            Domain pushedDown = domain.simplify();
-            return new PredicatePushdownController.DomainPushdownResult(pushedDown, domain);
-        }
-        else {
-            // full pushdown
-            return new PredicatePushdownController.DomainPushdownResult(domain, Domain.all(domain.getType()));
-        }
-    }
-
     public static LongWriteFunction oracleDateWriteFunction()
     {
         return (statement, index, value) -> {
@@ -390,7 +375,7 @@ public class OracleClient
                     return timestamp.toInstant(ZoneOffset.UTC).toEpochMilli() * MICROSECONDS_PER_MILLISECOND;
                 },
                 oracleTimestampWriteFunction(),
-                OracleClient::fullPushdownIfSupported);
+                FULL_PUSHDOWN);
     }
 
     public static ColumnMapping oracleTimestampWithTimeZoneColumnMapping()
@@ -404,7 +389,7 @@ public class OracleClient
                             timestamp.getZone().getId());
                 },
                 oracleTimestampWithTimeZoneWriteFunction(),
-                OracleClient::fullPushdownIfSupported);
+                FULL_PUSHDOWN);
     }
 
     public static LongWriteFunction oracleTimestampWithTimeZoneWriteFunction()
@@ -482,13 +467,13 @@ public class OracleClient
     }
 
     @Override
-    public void setColumnComment(JdbcIdentity identity, JdbcTableHandle handle, JdbcColumnHandle column, Optional<String> comment)
+    public void setColumnComment(ConnectorSession session, JdbcTableHandle handle, JdbcColumnHandle column, Optional<String> comment)
     {
         String sql = format(
                 "COMMENT ON COLUMN %s.%s IS '%s'",
                 quoted(handle.getRemoteTableName()),
                 quoted(column.getColumnName()),
                 comment.orElse(""));
-        execute(identity, sql);
+        execute(session, sql);
     }
 }
