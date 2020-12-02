@@ -62,7 +62,6 @@ import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
 import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Lists;
-import com.google.inject.name.Named;
 import io.airlift.log.Logger;
 import io.prestosql.plugin.hive.HdfsEnvironment;
 import io.prestosql.plugin.hive.HdfsEnvironment.HdfsContext;
@@ -175,9 +174,9 @@ public class GlueHiveMetastore
     public GlueHiveMetastore(
             HdfsEnvironment hdfsEnvironment,
             GlueHiveMetastoreConfig glueConfig,
-            @Named("glue-partitions") @ForGlueHiveMetastore Executor partitionsExecutor,
-            @Named("glue-statistics-read") @ForGlueHiveMetastore Executor statisticsReadExecutor,
-            @Named("glue-statistics-write") @ForGlueHiveMetastore Executor statisticsWriteExecutor,
+            @ForGlueHiveMetastore Executor partitionsExecutor,
+            @ForGlueColumnStatisticsRead Executor statisticsReadExecutor,
+            @ForGlueColumnStatisticsWrite Executor statisticsWriteExecutor,
             @ForGlueHiveMetastore Optional<RequestHandler2> requestHandler,
             @ForGlueHiveMetastore Predicate<com.amazonaws.services.glue.model.Table> tableFilter)
     {

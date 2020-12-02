@@ -123,16 +123,6 @@ public class GlueStatConverter
         return Optional.empty();
     }
 
-    private static Optional<Column> columnByName(TableInput table, String columnName)
-    {
-        for (com.amazonaws.services.glue.model.Column column : table.getStorageDescriptor().getColumns()) {
-            if (column.getName().equals(columnName)) {
-                return Optional.of(GlueToPrestoConverter.convertColumn(column));
-            }
-        }
-        return Optional.empty();
-    }
-
     public static HiveColumnStatistics fromGlueColumnStatistics(ColumnStatisticsData catalogColumnStatisticsData, OptionalLong rowCount)
     {
         ColumnStatisticsType type = ColumnStatisticsType.fromValue(catalogColumnStatisticsData.getType());

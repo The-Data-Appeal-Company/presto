@@ -21,7 +21,6 @@ import com.google.inject.Provides;
 import com.google.inject.Scopes;
 import com.google.inject.Singleton;
 import com.google.inject.TypeLiteral;
-import com.google.inject.name.Named;
 import io.airlift.concurrent.BoundedExecutor;
 import io.airlift.configuration.AbstractConfigurationAwareModule;
 import io.prestosql.plugin.base.CatalogName;
@@ -58,6 +57,17 @@ public class GlueMetastoreModule
                 .annotatedWith(ForRecordingHiveMetastore.class)
                 .to(GlueHiveMetastore.class)
                 .in(Scopes.SINGLETON);
+
+        binder.bind(HiveMetastore.class)
+                .annotatedWith(ForGlueColumnStatisticsRead.class)
+                .to(GlueHiveMetastore.class)
+                .in(Scopes.SINGLETON);
+
+        binder.bind(HiveMetastore.class)
+                .annotatedWith(ForGlueColumnStatisticsWrite.class)
+                .to(GlueHiveMetastore.class)
+                .in(Scopes.SINGLETON);
+
         binder.bind(GlueHiveMetastore.class).in(Scopes.SINGLETON);
         newExporter(binder).export(GlueHiveMetastore.class).withGeneratedName();
 
@@ -65,11 +75,10 @@ public class GlueMetastoreModule
         install(new CachingHiveMetastoreModule());
     }
 
-    @Named("glue-partitions")
     @Provides
     @Singleton
     @ForGlueHiveMetastore
-    public Executor createPartitionsExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig)
+    public Executor createExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig)
     {
         if (hiveConfig.getGetPartitionThreads() == 1) {
             return directExecutor();
@@ -79,10 +88,9 @@ public class GlueMetastoreModule
                 hiveConfig.getGetPartitionThreads());
     }
 
-    @Named("glue-statistics-read")
     @Provides
     @Singleton
-    @ForGlueHiveMetastore
+    @ForGlueColumnStatisticsRead
     public Executor createStatisticsReadExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig)
     {
         if (hiveConfig.getReadStatisticsThreads() == 1) {
@@ -93,10 +101,9 @@ public class GlueMetastoreModule
                 hiveConfig.getReadStatisticsThreads());
     }
 
-    @Named("glue-statistics-write")
     @Provides
     @Singleton
-    @ForGlueHiveMetastore
+    @ForGlueColumnStatisticsWrite
     public Executor createStatisticsWriteExecutor(CatalogName catalogName, GlueHiveMetastoreConfig hiveConfig)
     {
         if (hiveConfig.getWriteStatisticsThreads() == 1) {
